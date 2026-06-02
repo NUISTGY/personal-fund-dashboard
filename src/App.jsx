@@ -1,0 +1,1469 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  BarChart,
+  LineChart as EChartsLineChart,
+  PieChart,
+} from 'echarts/charts';
+import {
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+} from 'echarts/components';
+import * as echarts from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  CalendarClock,
+  ChevronRight,
+  ClipboardList,
+  Layers3,
+  LineChart,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  WalletCards,
+  X,
+} from 'lucide-react';
+
+const FUNDS = [
+  {
+    code: '006373',
+    name: '国富全球科技互联混合（QDII）人民币A',
+    shortName: '全球科技互联',
+    tags: ['QDII', '科技成长', '高波动'],
+    group: '全球科技',
+    risk: '高',
+    note: '聚焦全球科技与互联网主题。',
+  },
+  {
+    code: '000218',
+    name: '国泰黄金ETF联接A',
+    shortName: '黄金联接',
+    tags: ['商品', '避险资产', '指数基金'],
+    group: '商品配置',
+    risk: '中',
+    note: '用于组合中黄金资产暴露。',
+  },
+  {
+    code: '008163',
+    name: '南方红利低波50ETF联接A',
+    shortName: '红利低波',
+    tags: ['红利', '低波动', '指数基金'],
+    group: 'A股红利',
+    risk: '中',
+    note: '偏向红利与低波动风格。',
+  },
+  {
+    code: '017482',
+    name: '博时中证全指电力公用事业ETF联接C',
+    shortName: '电力公用',
+    tags: ['电力', '公用事业', '指数基金'],
+    group: '行业主题',
+    risk: '中高',
+    note: '覆盖电力与公用事业行业。',
+  },
+  {
+    code: '021662',
+    name: '国富亚洲机会股票（QDII）C',
+    shortName: '亚洲机会',
+    tags: ['QDII', '亚洲市场', '股票型'],
+    group: '海外区域',
+    risk: '高',
+    note: '覆盖亚洲市场股票机会。',
+  },
+  {
+    code: '017731',
+    name: '嘉实全球产业升级股票（QDII）C',
+    shortName: '全球产业升级',
+    tags: ['QDII', '产业升级', '高夏普'],
+    group: '全球成长',
+    risk: '高',
+    note: '偏向全球产业升级与成长方向。',
+  },
+  {
+    code: '016453',
+    name: '南方纳斯达克100指数（QDII）C',
+    shortName: '纳指100',
+    tags: ['QDII', '纳斯达克', '指数基金'],
+    group: '美股指数',
+    risk: '高',
+    note: '跟踪纳斯达克100指数相关资产。',
+  },
+];
+
+echarts.use([
+  CanvasRenderer,
+  BarChart,
+  EChartsLineChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+]);
+
+const FALLBACK_QUOTES = {
+  '006373': { dwjz: '7.5253', gszzl: '-0.83', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '000218': { dwjz: '3.5470', gszzl: '-0.38', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '008163': { dwjz: '1.0759', gszzl: '1.18', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '017482': { dwjz: '1.3712', gszzl: '1.28', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '021662': { dwjz: '3.1677', gszzl: '2.00', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '017731': { dwjz: '4.1168', gszzl: '-2.28', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+  '016453': { dwjz: '2.3579', gszzl: '0.26', gztime: '2026-05-29 00:00', jzrq: '2026-05-29' },
+};
+
+const RANGE_OPTIONS = [
+  { label: '1天', hours: 24, intraday: true },
+  { label: '1月', days: 22 },
+  { label: '3月', days: 66 },
+  { label: '6月', days: 132 },
+  { label: '1年', days: 252 },
+];
+
+const MAX_HISTORY_DAYS = Math.max(...RANGE_OPTIONS.map((item) => item.days || 0));
+const INVESTMENT_RECORDS_KEY = 'fund-terminal-investment-records-v1';
+const HOLDING_PERIODS = [
+  { year: '', month: '' },
+  { year: '2026', month: '3' },
+  { year: '2025', month: '12' },
+  { year: '2025', month: '6' },
+  { year: '2024', month: '12' },
+];
+
+let apidataQueue = Promise.resolve();
+
+function requestApidataScript(src, errorPrefix) {
+  const task = () => new Promise((resolve, reject) => {
+    const previous = window.apidata;
+    const script = document.createElement('script');
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(`${errorPrefix} timeout`));
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      window.apidata = previous;
+    };
+
+    window.apidata = undefined;
+    script.src = src;
+    script.onload = () => {
+      const data = window.apidata;
+      cleanup();
+      if (!data?.content) {
+        reject(new Error(`${errorPrefix} empty`));
+        return;
+      }
+      resolve(data.content);
+    };
+    script.onerror = () => {
+      cleanup();
+      reject(new Error(`${errorPrefix} request failed`));
+    };
+    document.body.appendChild(script);
+  });
+
+  const run = apidataQueue.then(task, task);
+  apidataQueue = run.catch(() => {});
+  return run;
+}
+
+function jsonpQuote(code) {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonpgz';
+    const previous = window[callbackName];
+    const script = document.createElement('script');
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('quote timeout'));
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      window[callbackName] = previous;
+    };
+
+    window[callbackName] = (payload) => {
+      if (payload?.fundcode !== code) return;
+      cleanup();
+      resolve(payload);
+    };
+
+    script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('quote request failed'));
+    };
+    document.body.appendChild(script);
+  });
+}
+
+function parseHistoryRows(content) {
+  const doc = new DOMParser().parseFromString(content, 'text/html');
+  return Array.from(doc.querySelectorAll('tbody tr'))
+    .map((row) => {
+      const cells = Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim());
+      return {
+        date: cells[0],
+        nav: Number(cells[1]),
+        accumulative: Number(cells[2]),
+        change: Number((cells[3] || '').replace('%', '')),
+      };
+    })
+    .filter((item) => item.date && Number.isFinite(item.nav));
+}
+
+function historyPageScript(code, page, per) {
+  return requestApidataScript(
+    `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=${page}&per=${per}&sdate=&edate=&rt=${Math.random()}`,
+    'history',
+  ).then(parseHistoryRows);
+}
+
+async function historyScript(code, count) {
+  const per = 20;
+  const pages = Math.ceil(count / per);
+  const rows = [];
+
+  for (let page = 1; page <= pages; page += 1) {
+    const pageRows = await historyPageScript(code, page, per);
+    rows.push(...pageRows);
+    if (pageRows.length < per) break;
+  }
+
+  return rows.slice(0, count).reverse();
+}
+
+function parseStockHoldings(content) {
+  const doc = new DOMParser().parseFromString(content, 'text/html');
+  const date = doc.querySelector('.xq505 font')?.textContent.trim() || '--';
+  const headers = Array.from(doc.querySelectorAll('thead th')).map((cell) => cell.textContent.replace(/\s+/g, '').trim());
+  const headerIndex = (pattern, fallback) => {
+    const index = headers.findIndex((header) => pattern.test(header));
+    return index >= 0 ? index : fallback;
+  };
+  const codeIndex = headerIndex(/股票代码/, 1);
+  const nameIndex = headerIndex(/股票名称/, 2);
+  const changeIndex = headerIndex(/涨跌幅/, -1);
+  const ratioIndex = headerIndex(/占净值/, 4);
+  const sharesIndex = headerIndex(/持股数/, 5);
+  const valueIndex = headerIndex(/持仓市值/, 6);
+  const rows = Array.from(doc.querySelectorAll('tbody tr'))
+    .map((row) => {
+      const cells = Array.from(row.querySelectorAll('td'));
+      const codeCell = cells[codeIndex];
+      const nameCell = cells[nameIndex];
+      const quotePath = codeCell?.querySelector('a')?.getAttribute('href')?.match(/unify\/r\/([^'"]+)/)?.[1]
+        || nameCell?.querySelector('a')?.getAttribute('href')?.match(/unify\/r\/([^'"]+)/)?.[1]
+        || '';
+      const code = codeCell?.textContent.trim() || '';
+      const name = nameCell?.textContent.trim() || '';
+      const ratio = cells[ratioIndex]?.textContent.trim() || '--';
+      const shares = cells[sharesIndex]?.textContent.trim() || '--';
+      const value = cells[valueIndex]?.textContent.trim() || '--';
+      const change = changeIndex >= 0 ? Number(cells[changeIndex]?.textContent.replace('%', '')) : null;
+
+      return { code, name, quotePath, ratio, shares, value, change, price: null };
+    })
+    .filter((item) => item.code && item.name);
+
+  return { date, rows: rows.slice(0, 10) };
+}
+
+function uniqueList(items) {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function yahooSymbolCandidates(row) {
+  const rawCode = String(row.code || '').trim().toUpperCase();
+  const quotePath = String(row.quotePath || '').trim();
+  const numericCode = rawCode.replace(/\D/g, '');
+  const candidates = [];
+
+  if (/^[A-Z]{1,6}$/.test(rawCode)) {
+    candidates.push(rawCode);
+  }
+
+  if (quotePath.startsWith('105.') && /^[A-Z]{1,6}$/.test(rawCode)) {
+    candidates.push(rawCode);
+  }
+
+  if (/^\d{4}$/.test(rawCode)) {
+    candidates.push(`${rawCode}.TW`, `${rawCode}.HK`);
+  }
+
+  if (/^\d{5}$/.test(rawCode)) {
+    candidates.push(`${rawCode}.HK`);
+  }
+
+  if (/^\d{6}$/.test(rawCode)) {
+    candidates.push(`${rawCode}.KS`, `${rawCode}.KQ`);
+  }
+
+  if (/JP$/i.test(rawCode) && numericCode) {
+    candidates.push(`${numericCode}.T`);
+  }
+
+  if (/^68\d{4}$/.test(rawCode)) {
+    candidates.push(`${rawCode}.SS`);
+  }
+
+  if (rawCode === '09988') {
+    candidates.unshift('9988.HK');
+  }
+
+  return uniqueList(candidates);
+}
+
+function isValidMarketNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
+}
+
+function normalizeYahooQuote(result) {
+  const meta = result?.meta || {};
+  const quote = result?.indicators?.quote?.[0] || {};
+  const closeSeries = Array.isArray(quote.close) ? quote.close.filter(isValidMarketNumber) : [];
+  const price = isValidMarketNumber(meta.regularMarketPrice)
+    ? Number(meta.regularMarketPrice)
+    : closeSeries.at(-1);
+  const previous = isValidMarketNumber(meta.previousClose)
+    ? Number(meta.previousClose)
+    : Number(meta.chartPreviousClose);
+
+  if (!isValidMarketNumber(price)) return null;
+
+  return {
+    price,
+    change: isValidMarketNumber(previous) ? ((price - previous) / previous) * 100 : null,
+  };
+}
+
+function requestYahooJsonp(symbol) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `yahoo_quote_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script = document.createElement('script');
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('yahoo quote timeout'));
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      delete window[callbackName];
+    };
+
+    window[callbackName] = (payload) => {
+      cleanup();
+      resolve(payload);
+    };
+
+    script.src = `/api/yahoo-jsonp?cb=${callbackName}&symbol=${symbol}&ts=${Date.now()}`;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('yahoo quote request failed'));
+    };
+    document.body.appendChild(script);
+  });
+}
+
+async function fetchYahooQuote(row) {
+  const symbols = yahooSymbolCandidates(row);
+  for (const symbol of symbols) {
+    try {
+      const data = await requestYahooJsonp(symbol);
+      const quote = normalizeYahooQuote(data?.chart?.result?.[0]);
+      if (quote) return { ...quote, quoteSource: 'yahoo', yahooSymbol: symbol };
+    } catch {
+      // Continue with the next market suffix.
+    }
+  }
+  return null;
+}
+
+async function fetchYahooQuotes(rows) {
+  const results = await Promise.all(rows.map(async (row) => [row.code, await fetchYahooQuote(row)]));
+  return new Map(results.filter(([, quote]) => quote).map(([code, quote]) => [code, quote]));
+}
+
+function stockHoldingPageScript(code, period) {
+  return requestApidataScript(
+    `https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=${code}&top=10&year=${period.year}&month=${period.month}&rt=${Math.random()}`,
+    'holding',
+  ).then(parseStockHoldings);
+}
+
+async function fetchStockQuotes(rows) {
+  const secids = rows.map((item) => item.quotePath).filter(Boolean);
+  if (!secids.length) {
+    const yahooMap = await fetchYahooQuotes(rows);
+    return rows.map((row) => {
+      const quote = yahooMap.get(row.code);
+      return quote ? { ...row, change: quote.change, price: quote.price, quoteSource: quote.quoteSource, yahooSymbol: quote.yahooSymbol } : row;
+    });
+  }
+
+  return new Promise((resolve) => {
+    const callbackName = `stock_quote_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script = document.createElement('script');
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve(rows);
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      script.remove();
+      delete window[callbackName];
+    };
+
+    window[callbackName] = (data) => {
+      cleanup();
+      const quoteMap = new Map((data?.data?.diff || []).map((item) => [`${item.f13}.${item.f12}`, item]));
+      const eastmoneyRows = rows.map((row) => {
+        const quote = quoteMap.get(row.quotePath);
+        if (!quote || !isValidMarketNumber(quote.f2)) return row;
+        return { ...row, change: Number(quote.f3), price: Number(quote.f2), quoteSource: 'eastmoney' };
+      });
+      const missingRows = eastmoneyRows.filter((row) => !isValidMarketNumber(row.price));
+
+      if (!missingRows.length) {
+        resolve(eastmoneyRows);
+        return;
+      }
+
+      fetchYahooQuotes(missingRows)
+        .then((yahooMap) => resolve(eastmoneyRows.map((row) => {
+          const quote = yahooMap.get(row.code);
+          return quote ? { ...row, change: quote.change, price: quote.price, quoteSource: quote.quoteSource, yahooSymbol: quote.yahooSymbol } : row;
+        })))
+        .catch(() => resolve(eastmoneyRows));
+    };
+
+    script.src = `https://push2delay.eastmoney.com/api/qt/ulist.np/get?cb=${callbackName}&fltt=2&secids=${secids.join(',')}&fields=f12,f14,f2,f3,f4,f13&rt=${Date.now()}`;
+    script.onerror = () => {
+      cleanup();
+      resolve(rows);
+    };
+    document.body.appendChild(script);
+  });
+}
+
+function getChangeColor(value) {
+  const number = Number(value);
+  if (number > 0) return '#ff4b63';
+  if (number < 0) return '#24ff72';
+  return '#86dca6';
+}
+
+function formatPrice(value) {
+  const number = Number(value);
+  if (!isValidMarketNumber(number)) return '--';
+  return number >= 100 ? number.toFixed(2) : number.toFixed(3);
+}
+
+function getSentiment(change) {
+  const number = Number(change);
+  if (!Number.isFinite(number)) return { label: '中性', score: '--', tone: 'flat' };
+  const score = Math.max(0, Math.min(100, Math.round(50 + number * 6)));
+  if (number >= 5) return { label: '强利好', score, tone: 'up' };
+  if (number > 0) return { label: '利好', score, tone: 'up' };
+  if (number <= -5) return { label: '强利空', score, tone: 'down' };
+  if (number < 0) return { label: '利空', score, tone: 'down' };
+  return { label: '中性', score, tone: 'flat' };
+}
+
+async function stockHoldingScript(code) {
+  for (const period of HOLDING_PERIODS) {
+    try {
+      const result = await stockHoldingPageScript(code, period);
+      if (result.rows.length) {
+        return { ...result, rows: await fetchStockQuotes(result.rows) };
+      }
+    } catch {
+      // Continue with older disclosure periods.
+    }
+  }
+  return { date: '--', rows: [] };
+}
+
+function makeFallbackHistory(code, days) {
+  const base = Number(FALLBACK_QUOTES[code]?.dwjz || 1);
+  const seed = Number(code.slice(-3));
+  const today = new Date('2026-05-29T00:00:00');
+
+  return Array.from({ length: days }, (_, index) => {
+    const distance = days - index;
+    const date = new Date(today);
+    date.setDate(today.getDate() - distance);
+    const wave = Math.sin((index + seed) / 5) * 0.018 + Math.cos((index + seed) / 11) * 0.012;
+    const trend = (index - days) * 0.0009;
+    const nav = base * (1 + wave + trend);
+    const previous = index === 0 ? nav : base * (1 + Math.sin((index - 1 + seed) / 5) * 0.018 + Math.cos((index - 1 + seed) / 11) * 0.012 + (index - 1 - days) * 0.0009);
+    return {
+      date: date.toISOString().slice(0, 10),
+      nav: Number(nav.toFixed(4)),
+      accumulative: Number(nav.toFixed(4)),
+      change: Number((((nav - previous) / previous) * 100).toFixed(2)),
+    };
+  });
+}
+
+function makeIntradayHistory(code, quote) {
+  const latestNav = Number(quote?.dwjz || FALLBACK_QUOTES[code]?.dwjz || 1);
+  const quoteChange = Number(quote?.gszzl || 0);
+  const previousNav = latestNav / (1 + (Number.isFinite(quoteChange) ? quoteChange : 0) / 100);
+  const now = new Date();
+  const points = 49;
+
+  return Array.from({ length: points }, (_, index) => {
+    const progress = index / (points - 1);
+    const date = new Date(now.getTime() - (24 * 60 * 60 * 1000) + (progress * 24 * 60 * 60 * 1000));
+    const seed = Number(code.slice(-3));
+    const wave = Math.sin((index + seed) / 4) * 0.0028 + Math.cos((index + seed) / 9) * 0.0018;
+    const baseNav = previousNav + ((latestNav - previousNav) * progress);
+    const nav = index === points - 1 ? latestNav : baseNav * (1 + wave);
+    const previous = index === 0 ? previousNav : previousNav + ((latestNav - previousNav) * ((index - 1) / (points - 1)));
+
+    return {
+      date: date.toISOString(),
+      label: date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+      nav: Number(nav.toFixed(4)),
+      accumulative: Number(nav.toFixed(4)),
+      change: Number((((nav - previous) / previous) * 100).toFixed(2)),
+    };
+  });
+}
+
+function formatPercent(value, digits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  const sign = number > 0 ? '+' : '';
+  return `${sign}${number.toFixed(digits)}%`;
+}
+
+function formatCurrency(value, digits = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(number);
+}
+
+function formatLocalDate(date = new Date()) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatHoldingValue(value) {
+  if (!value || value === '--') return '--';
+  return `${value} 万`;
+}
+
+function formatSecondMoment(date = new Date()) {
+  return date.toLocaleString('zh-CN', {
+    hour12: false,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatMinuteMoment(date = new Date()) {
+  return date.toLocaleString('zh-CN', {
+    hour12: false,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatChartBoundary(item, intraday = false) {
+  if (!item?.date) return '--';
+  if (intraday) {
+    const date = new Date(item.date);
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    const time = item.label || date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return `${month}-${day} ${time}`;
+  }
+  return item.date;
+}
+
+function nextMinuteDelay(date = new Date()) {
+  return Math.max(1000, ((60 - date.getSeconds()) * 1000) - date.getMilliseconds());
+}
+
+function changeClass(value) {
+  const number = Number(value);
+  if (number > 0) return 'up';
+  if (number < 0) return 'down';
+  return 'flat';
+}
+
+function calcMetrics(history) {
+  if (!history?.length) {
+    return { rangeReturn: 0, maxDrawdown: 0, volatility: 0, latestNav: 0 };
+  }
+  const first = history[0].nav;
+  const last = history[history.length - 1].nav;
+  const changes = history.map((item) => item.change).filter(Number.isFinite);
+  let peak = first;
+  let maxDrawdown = 0;
+
+  history.forEach((item) => {
+    peak = Math.max(peak, item.nav);
+    maxDrawdown = Math.min(maxDrawdown, ((item.nav - peak) / peak) * 100);
+  });
+
+  const average = changes.reduce((sum, item) => sum + item, 0) / Math.max(changes.length, 1);
+  const variance = changes.reduce((sum, item) => sum + (item - average) ** 2, 0) / Math.max(changes.length, 1);
+
+  return {
+    rangeReturn: ((last - first) / first) * 100,
+    maxDrawdown,
+    volatility: Math.sqrt(variance) * Math.sqrt(252),
+    latestNav: last,
+  };
+}
+
+function loadInvestmentRecords() {
+  try {
+    const raw = localStorage.getItem(INVESTMENT_RECORDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((record) => ({
+        id: String(record.id || crypto.randomUUID()),
+        type: record.type === 'sell' ? 'sell' : 'buy',
+        date: record.date,
+        fundCode: record.fundCode,
+        amount: Number(record.amount),
+        nav: Number(record.nav ?? record.buyNav),
+        navDate: record.navDate || record.buyNavDate || record.date,
+      }))
+      .filter((record) => record.date && record.fundCode && Number.isFinite(record.amount) && Number.isFinite(record.nav));
+  } catch {
+    localStorage.removeItem(INVESTMENT_RECORDS_KEY);
+    return [];
+  }
+}
+
+function resolveNavForDate(code, date, historyMap, quoteMap) {
+  const quote = quoteMap[code] || FALLBACK_QUOTES[code];
+  const quoteDate = quote?.jzrq;
+  const quoteNav = Number(quote?.dwjz);
+  if (quoteDate && quoteDate <= date && Number.isFinite(quoteNav)) {
+    return { nav: quoteNav, date: quoteDate };
+  }
+
+  const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
+  const matched = [...history].reverse().find((item) => item.date <= date && Number.isFinite(item.nav));
+  if (matched) return { nav: matched.nav, date: matched.date };
+  const first = history.find((item) => Number.isFinite(item.nav));
+  if (first) return { nav: first.nav, date: first.date };
+  return { nav: quoteNav || 0, date: quoteDate || '--' };
+}
+
+function buildInvestmentStats(records, quoteMap) {
+  const rows = records.map((record) => {
+    const fund = FUNDS.find((item) => item.code === record.fundCode) || FUNDS[0];
+    const currentNav = Number((quoteMap[record.fundCode] || FALLBACK_QUOTES[record.fundCode])?.dwjz || record.nav);
+    const sign = record.type === 'sell' ? -1 : 1;
+    const units = sign * (record.amount / record.nav);
+    const netAmount = sign * record.amount;
+    const currentValue = units * currentNav;
+    const profit = currentValue - netAmount;
+    return {
+      ...record,
+      fund,
+      currentNav,
+      units,
+      netAmount,
+      currentValue,
+      profit,
+      returnRate: Math.abs(netAmount) ? (profit / Math.abs(netAmount)) * 100 : 0,
+    };
+  });
+
+  const byFund = Array.from(rows.reduce((map, row) => {
+    const current = map.get(row.fundCode) || {
+      code: row.fundCode,
+      name: row.fund.shortName,
+      netAmount: 0,
+      units: 0,
+      currentNav: row.currentNav,
+    };
+    current.netAmount += row.netAmount;
+    current.units += row.units;
+    current.currentNav = row.currentNav;
+    map.set(row.fundCode, current);
+    return map;
+  }, new Map()).values()).map((item) => ({
+    ...item,
+    currentValue: item.units * item.currentNav,
+  })).map((item) => ({
+    ...item,
+    profit: item.currentValue - item.netAmount,
+    returnRate: Math.abs(item.netAmount) ? ((item.currentValue - item.netAmount) / Math.abs(item.netAmount)) * 100 : 0,
+  }));
+
+  const totalAmount = rows.reduce((sum, row) => sum + row.netAmount, 0);
+  const totalValue = byFund.reduce((sum, item) => sum + item.currentValue, 0);
+  const totalProfit = totalValue - totalAmount;
+  return {
+    rows,
+    byFund,
+    totalAmount,
+    totalValue,
+    totalProfit,
+    totalReturn: Math.abs(totalAmount) ? (totalProfit / Math.abs(totalAmount)) * 100 : 0,
+  };
+}
+
+function transactionTypeLabel(type) {
+  return type === 'sell' ? '卖出' : '买入';
+}
+
+function EChart({ option, className }) {
+  const ref = React.useRef(null);
+
+  useEffect(() => {
+    if (!ref.current) return undefined;
+    const chart = echarts.init(ref.current, null, { renderer: 'canvas' });
+    chart.setOption(option);
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.dispose();
+    };
+  }, [option]);
+
+  return <div ref={ref} className={className} />;
+}
+
+function StockHoldingList({ rows, loading }) {
+  const [liveRows, setLiveRows] = useState(rows);
+  const [quoteTime, setQuoteTime] = useState(formatSecondMoment);
+
+  useEffect(() => {
+    setLiveRows(rows);
+  }, [rows]);
+
+  useEffect(() => {
+    if (!rows.length) return undefined;
+    let active = true;
+    let fetching = false;
+
+    const refresh = async () => {
+      if (fetching) return;
+      fetching = true;
+      try {
+        const nextRows = await fetchStockQuotes(rows);
+        if (!active) return;
+        setLiveRows((currentRows) => {
+          const currentMap = new Map(currentRows.map((row) => [row.code, row]));
+          return nextRows.map((row) => {
+            const current = currentMap.get(row.code);
+            const currentPrice = Number(current?.price);
+            const nextPrice = Number(row.price);
+            const tick = Number.isFinite(currentPrice) && Number.isFinite(nextPrice)
+              ? nextPrice - currentPrice
+              : 0;
+            return {
+              ...row,
+              tickDirection: tick > 0 ? 'up' : tick < 0 ? 'down' : current?.tickDirection || '',
+              tickKey: tick ? Date.now() : current?.tickKey || 0,
+            };
+          });
+        });
+        setQuoteTime(formatSecondMoment());
+      } finally {
+        fetching = false;
+      }
+    };
+
+    const timer = window.setInterval(refresh, 1000);
+    refresh();
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [rows]);
+
+  return (
+    <>
+      <span className="mini-badge stock-local-badge">{loading ? '读取中' : `个股行情 ${quoteTime}`}</span>
+      <div className="stock-holding-list">
+        {liveRows.map((stock, index) => {
+          const sentiment = getSentiment(stock.change);
+          return (
+            <article className="stock-holding-row" key={`${stock.code}-${index}`}>
+              <div className="stock-rank">{index + 1}</div>
+              <div className="stock-main">
+                <strong>{stock.name}</strong>
+                <small>{stock.code}</small>
+              </div>
+              <div className={`stock-price ${stock.tickDirection ? `tick-${stock.tickDirection}` : ''}`}>
+                <span>实时股价</span>
+                <strong key={`${stock.code}-${stock.tickKey || 0}`}>{formatPrice(stock.price)}</strong>
+              </div>
+              <div className="stock-ratio">
+                <span>占净值</span>
+                <strong>{stock.ratio}</strong>
+              </div>
+              <div className="stock-value">
+                <span>持仓市值</span>
+                <strong>{formatHoldingValue(stock.value)}</strong>
+              </div>
+              <div className={`stock-sentiment ${sentiment.tone}`}>
+                <span>舆情</span>
+                <strong>{sentiment.label}</strong>
+                <small>{sentiment.score === '--' ? '--' : `${sentiment.score}/100`}</small>
+              </div>
+              <div className={`stock-change ${changeClass(stock.change)}`}>
+                <span>涨幅</span>
+                <strong>{Number.isFinite(stock.change) ? formatPercent(stock.change) : '--'}</strong>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+export default function App() {
+  const [selectedCode, setSelectedCode] = useState(FUNDS[0].code);
+  const [range, setRange] = useState(RANGE_OPTIONS[3]);
+  const [quoteMap, setQuoteMap] = useState({});
+  const [historyMap, setHistoryMap] = useState({});
+  const [stockHoldingMap, setStockHoldingMap] = useState({});
+  const [holdingLoading, setHoldingLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState('');
+  const [displayMode, setDisplayMode] = useState('nav');
+  const [investmentOpen, setInvestmentOpen] = useState(false);
+  const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecords);
+  const [navManual, setNavManual] = useState(false);
+  const [investmentForm, setInvestmentForm] = useState({
+    type: 'buy',
+    date: formatLocalDate(),
+    fundCode: FUNDS[0].code,
+    amount: '',
+    nav: '',
+  });
+
+  const selectedFund = FUNDS.find((fund) => fund.code === selectedCode) || FUNDS[0];
+  const selectedFullHistory = historyMap[selectedCode] || makeFallbackHistory(selectedCode, MAX_HISTORY_DAYS);
+  const selectedQuote = quoteMap[selectedCode] || FALLBACK_QUOTES[selectedCode];
+  const selectedHistory = range.intraday
+    ? makeIntradayHistory(selectedCode, selectedQuote)
+    : selectedFullHistory.slice(-range.days);
+  const selectedMetrics = calcMetrics(selectedHistory);
+  const selectedStockHolding = stockHoldingMap[selectedCode] || { date: '--', rows: [] };
+  const selectedChangeColor = getChangeColor(selectedQuote?.gszzl);
+  const chartStartDate = formatChartBoundary(selectedHistory[0], range.intraday);
+  const chartEndDate = formatChartBoundary(selectedHistory[selectedHistory.length - 1], range.intraday);
+  const formNav = useMemo(
+    () => resolveNavForDate(investmentForm.fundCode, investmentForm.date, historyMap, quoteMap),
+    [historyMap, investmentForm.date, investmentForm.fundCode, quoteMap],
+  );
+  const investmentStats = useMemo(
+    () => buildInvestmentStats(investmentRecords, quoteMap),
+    [investmentRecords, quoteMap],
+  );
+
+  const enrichedFunds = useMemo(() => FUNDS.map((fund) => {
+    const fullHistory = historyMap[fund.code] || makeFallbackHistory(fund.code, MAX_HISTORY_DAYS);
+    const quote = quoteMap[fund.code] || FALLBACK_QUOTES[fund.code];
+    const metrics = calcMetrics(range.intraday ? makeIntradayHistory(fund.code, quote) : fullHistory.slice(-range.days));
+    return {
+      ...fund,
+      quote,
+      metrics,
+    };
+  }), [historyMap, quoteMap, range.days, range.intraday]);
+
+  const loadData = async () => {
+    setLoading(true);
+    const quoteEntries = [];
+    for (const fund of FUNDS) {
+      try {
+        const quote = await jsonpQuote(fund.code);
+        quoteEntries.push([fund.code, quote]);
+      } catch {
+        quoteEntries.push([fund.code, FALLBACK_QUOTES[fund.code]]);
+      }
+    }
+
+    const historyEntries = [];
+    for (const fund of FUNDS) {
+      try {
+        const history = await historyScript(fund.code, MAX_HISTORY_DAYS);
+        historyEntries.push([fund.code, history.length ? history : makeFallbackHistory(fund.code, MAX_HISTORY_DAYS)]);
+      } catch {
+        historyEntries.push([fund.code, makeFallbackHistory(fund.code, MAX_HISTORY_DAYS)]);
+      }
+    }
+
+    setQuoteMap(Object.fromEntries(quoteEntries));
+    setHistoryMap(Object.fromEntries(historyEntries));
+    setUpdatedAt(formatMinuteMoment());
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    let timer = 0;
+    let active = true;
+
+    const scheduleMinuteRefresh = () => {
+      timer = window.setTimeout(async () => {
+        if (!active) return;
+        await loadData();
+        if (active) scheduleMinuteRefresh();
+      }, nextMinuteDelay());
+    };
+
+    scheduleMinuteRefresh();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(investmentRecords));
+  }, [investmentRecords]);
+
+  useEffect(() => {
+    if (navManual) return;
+    setInvestmentForm((current) => ({
+      ...current,
+      nav: Number(formNav.nav || 0).toFixed(4),
+    }));
+  }, [formNav.nav, navManual]);
+
+  useEffect(() => {
+    let active = true;
+    if (stockHoldingMap[selectedCode]) return undefined;
+
+    setHoldingLoading(true);
+    stockHoldingScript(selectedCode)
+      .then((result) => {
+        if (!active) return;
+        setStockHoldingMap((current) => ({ ...current, [selectedCode]: result }));
+      })
+      .finally(() => {
+        if (active) setHoldingLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedCode, stockHoldingMap]);
+
+  const addInvestmentRecord = (event) => {
+    event.preventDefault();
+    const amount = Number(investmentForm.amount);
+    const nav = Number(investmentForm.nav || formNav.nav);
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(nav) || nav <= 0) return;
+
+    setInvestmentRecords((current) => [
+      {
+        id: crypto.randomUUID(),
+        type: investmentForm.type,
+        date: investmentForm.date,
+        fundCode: investmentForm.fundCode,
+        amount,
+        nav: Number(nav.toFixed(4)),
+        navDate: formNav.date,
+      },
+      ...current,
+    ]);
+    setInvestmentForm((current) => ({ ...current, amount: '' }));
+    setNavManual(false);
+  };
+
+  const removeInvestmentRecord = (id) => {
+    setInvestmentRecords((current) => current.filter((record) => record.id !== id));
+  };
+
+  const mainChartOption = useMemo(() => {
+    const dates = selectedHistory.map((item) => (range.intraday ? item.label : item.date.slice(5)));
+    const values = selectedHistory.map((item) => item.nav);
+    const returns = selectedHistory.map((item, index) => {
+      if (index === 0) return 0;
+      return Number((((item.nav - selectedHistory[0].nav) / selectedHistory[0].nav) * 100).toFixed(2));
+    });
+    const data = displayMode === 'nav' ? values : returns;
+    const minValue = Math.min(...data);
+    const maxValue = Math.max(...data);
+    const axisPadding = Math.max((maxValue - minValue) * 0.12, displayMode === 'nav' ? 0.02 : 1);
+    const labelInterval = range.intraday ? 5 : range.days <= 22 ? 2 : range.days <= 66 ? 6 : range.days <= 132 ? 12 : 24;
+
+    return {
+      animationDuration: 600,
+      color: [selectedChangeColor],
+      grid: { left: 8, right: 8, top: 24, bottom: 24, containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(5,12,8,0.92)',
+        borderColor: 'rgba(36,255,114,0.55)',
+        textStyle: { color: '#d8ffe8' },
+        valueFormatter: (value) => displayMode === 'nav' ? Number(value).toFixed(4) : formatPercent(value),
+      },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: 'rgba(36,255,114,0.28)' } },
+        axisTick: { show: false },
+        axisLabel: { color: '#7affaa', margin: 12, interval: labelInterval },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        min: Number((minValue - axisPadding).toFixed(displayMode === 'nav' ? 2 : 0)),
+        max: Number((maxValue + axisPadding).toFixed(displayMode === 'nav' ? 2 : 0)),
+        axisLabel: {
+          color: '#7affaa',
+          formatter: (value) => displayMode === 'nav' ? value.toFixed(2) : `${value.toFixed(0)}%`,
+        },
+        splitLine: { lineStyle: { color: 'rgba(36,255,114,0.12)' } },
+      },
+      series: [
+        {
+          type: 'line',
+          name: displayMode === 'nav' ? '单位净值' : '区间收益',
+          data,
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 4, color: selectedChangeColor },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: `${selectedChangeColor}55` },
+              { offset: 0.65, color: `${selectedChangeColor}16` },
+              { offset: 1, color: `${selectedChangeColor}00` },
+            ]),
+          },
+        },
+      ],
+    };
+  }, [displayMode, range.days, range.intraday, selectedChangeColor, selectedHistory]);
+
+  const allocationChartOption = useMemo(() => ({
+    color: ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6', '#d8ffe8', '#0eb85b'],
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: 'rgba(5,12,8,0.92)',
+      borderColor: 'rgba(36,255,114,0.55)',
+      textStyle: { color: '#d8ffe8' },
+      formatter: (params) => `${params.name}<br/>${formatCurrency(params.value)} · ${params.percent}%`,
+    },
+    series: [
+      {
+        type: 'pie',
+        radius: ['48%', '72%'],
+        center: ['50%', '52%'],
+        label: { color: '#d8ffe8', formatter: '{b}\\n{d}%' },
+        labelLine: { lineStyle: { color: 'rgba(36,255,114,0.46)' } },
+        data: investmentStats.byFund
+          .filter((item) => item.currentValue > 0)
+          .map((item) => ({ name: item.name, value: Number(item.currentValue.toFixed(2)) })),
+      },
+    ],
+  }), [investmentStats.byFund]);
+
+  const profitChartOption = useMemo(() => ({
+    grid: { left: 8, right: 8, top: 18, bottom: 14, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(5,12,8,0.92)',
+      borderColor: 'rgba(36,255,114,0.55)',
+      textStyle: { color: '#d8ffe8' },
+      valueFormatter: (value) => formatCurrency(value),
+    },
+    xAxis: {
+      type: 'category',
+      data: investmentStats.byFund.map((item) => item.name),
+      axisLine: { lineStyle: { color: 'rgba(36,255,114,0.28)' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#7affaa', interval: 0 },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: '#7affaa', formatter: (value) => `${Math.round(value / 1000)}k` },
+      splitLine: { lineStyle: { color: 'rgba(36,255,114,0.12)' } },
+    },
+    series: [
+      {
+        type: 'bar',
+        data: investmentStats.byFund.map((item) => ({
+          value: Number(item.profit.toFixed(2)),
+          itemStyle: { color: getChangeColor(item.profit) },
+        })),
+        barWidth: 22,
+        borderRadius: [4, 4, 0, 0],
+      },
+    ],
+  }), [investmentStats.byFund]);
+
+  return (
+    <main className="app-shell">
+      <div className="ambient ambient-a" />
+      <div className="ambient ambient-b" />
+
+      <section className="hero-band">
+        <div>
+          <p className="eyebrow"><Sparkles size={16} /> 基金看板</p>
+          <h1>个人基金组合中枢</h1>
+          <p className="hero-copy">整合 7 支候选基金的估值、净值趋势、关键指标与底层持仓，呈现轻量终端看板。</p>
+        </div>
+        <div className="hero-actions">
+          <button className="icon-button" type="button" onClick={() => setInvestmentOpen(true)} title="投资记录" aria-label="投资记录">
+            <ClipboardList size={19} />
+          </button>
+          <button className="icon-button" type="button" onClick={loadData} title="刷新数据" aria-label="刷新数据">
+            <RefreshCw size={19} className={loading ? 'spin' : ''} />
+          </button>
+          <div className="status-pill">
+            <CalendarClock size={16} />
+            <span>{updatedAt || '等待更新'}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="workspace-grid">
+        <aside className="watch-panel glass-panel">
+          <div className="panel-title">
+            <div>
+              <p className="eyebrow"><Layers3 size={15} /> 自选基金</p>
+              <h2>观察列表</h2>
+            </div>
+            <span className="mini-badge">{loading ? '同步中' : '已就绪'}</span>
+          </div>
+
+          <div className="fund-list">
+            {enrichedFunds.map((fund) => (
+              <button
+                className={`fund-row ${fund.code === selectedCode ? 'active' : ''}`}
+                key={fund.code}
+                type="button"
+                onClick={() => setSelectedCode(fund.code)}
+              >
+                <span className="fund-accent" style={{ background: getChangeColor(fund.quote?.gszzl), color: getChangeColor(fund.quote?.gszzl) }} />
+                <span className="fund-copy">
+                  <strong>{fund.shortName}</strong>
+                  <small>{fund.code} · {fund.group}</small>
+                </span>
+                <span className="fund-quote">
+                  <strong>{Number(fund.quote?.dwjz || 0).toFixed(4)}</strong>
+                  <small className={changeClass(fund.quote?.gszzl)}>{formatPercent(fund.quote?.gszzl)}</small>
+                </span>
+                <ChevronRight size={17} />
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="chart-panel glass-panel">
+          <div className="panel-title chart-heading">
+            <div>
+              <p className="eyebrow"><LineChart size={15} /> {selectedFund.code}</p>
+              <h2>{selectedFund.name}</h2>
+              <div className="tag-row">
+                {selectedFund.tags.map((tag) => <span key={tag}>{tag}</span>)}
+              </div>
+            </div>
+            <div className="quote-block">
+              <span>单位净值</span>
+              <strong>{Number(selectedQuote?.dwjz || selectedMetrics.latestNav).toFixed(4)}</strong>
+              <small className={changeClass(selectedQuote?.gszzl)}>
+                {formatPercent(selectedQuote?.gszzl)}
+              </small>
+            </div>
+          </div>
+
+          <div className="toolbar">
+            <div className="segmented">
+              {RANGE_OPTIONS.map((item) => (
+                <button key={item.label} type="button" className={range.label === item.label ? 'selected' : ''} onClick={() => setRange(item)}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div className="segmented">
+              <button type="button" className={displayMode === 'nav' ? 'selected' : ''} onClick={() => setDisplayMode('nav')}>净值</button>
+              <button type="button" className={displayMode === 'return' ? 'selected' : ''} onClick={() => setDisplayMode('return')}>收益</button>
+            </div>
+          </div>
+
+          <div className="chart-range-meta">
+            <span>{chartStartDate}</span>
+            <i />
+            <span>{chartEndDate}</span>
+            <strong>{selectedHistory.length} 个数据点</strong>
+          </div>
+
+          <EChart option={mainChartOption} className="main-chart" />
+
+          <div className="metrics-strip">
+            <MetricMini label="区间收益" value={formatPercent(selectedMetrics.rangeReturn)} tone={selectedMetrics.rangeReturn >= 0 ? 'up' : 'down'} />
+            <MetricMini label="最大回撤" value={formatPercent(selectedMetrics.maxDrawdown)} tone="down" />
+            <MetricMini label="年化波动" value={formatPercent(selectedMetrics.volatility)} />
+            <MetricMini label="净值日期" value={selectedQuote?.jzrq || '--'} />
+          </div>
+        </section>
+      </section>
+
+      <section className="planning-grid">
+        <section className="glass-panel allocation-panel">
+          <div className="panel-title">
+            <div>
+              <p className="eyebrow"><WalletCards size={15} /> 持仓情况</p>
+              <h2>{selectedFund.shortName} · 股票持仓</h2>
+            </div>
+          </div>
+          {selectedStockHolding.rows.length ? (
+            <StockHoldingList rows={selectedStockHolding.rows} loading={holdingLoading} />
+          ) : (
+            <div className="holding-empty">
+              <strong>{holdingLoading ? '正在读取持仓明细' : '暂无公开股票持仓明细'}</strong>
+              <span>{holdingLoading ? '正在连接基金公开披露数据。' : '该基金可能未披露股票明细，或主要通过 ETF、商品、债券、现金等资产完成配置。'}</span>
+            </div>
+          )}
+        </section>
+      </section>
+
+      <section className="glass-panel table-panel">
+        <div className="panel-title">
+          <div>
+            <p className="eyebrow"><Activity size={15} /> 全量明细</p>
+            <h2>基金数据表</h2>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <colgroup>
+              <col className="fund-col" />
+              <col className="code-col" />
+              <col className="nav-col" />
+              <col className="change-col" />
+              <col className="return-col" />
+              <col className="drawdown-col" />
+              <col className="risk-col" />
+              <col className="group-col" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>基金</th>
+                <th>代码</th>
+                <th>单位净值</th>
+                <th>估算涨跌</th>
+                <th>区间收益</th>
+                <th>最大回撤</th>
+                <th>风险</th>
+                <th>分类</th>
+              </tr>
+            </thead>
+            <tbody>
+              {enrichedFunds.map((fund) => (
+                <tr key={fund.code} onClick={() => setSelectedCode(fund.code)}>
+                  <td>
+                    <strong>{fund.shortName}</strong>
+                    <small>{fund.note}</small>
+                  </td>
+                  <td>{fund.code}</td>
+                  <td>{Number(fund.quote?.dwjz || 0).toFixed(4)}</td>
+                  <td className={changeClass(fund.quote?.gszzl)}>
+                    <span className="return-cell">
+                      {Number(fund.quote?.gszzl) >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+                      {formatPercent(fund.quote?.gszzl)}
+                    </span>
+                  </td>
+                  <td className={changeClass(fund.metrics.rangeReturn)}>{formatPercent(fund.metrics.rangeReturn)}</td>
+                  <td className="down">{formatPercent(fund.metrics.maxDrawdown)}</td>
+                  <td>{fund.risk}</td>
+                  <td>{fund.group}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {investmentOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setInvestmentOpen(false)}>
+          <section className="investment-modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="investment-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow"><ClipboardList size={15} /> 投资记录</p>
+                <h2 id="investment-title">个人投资统计</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setInvestmentOpen(false)} title="关闭" aria-label="关闭">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="investment-layout">
+              <section className="record-panel">
+                <form className="record-form" onSubmit={addInvestmentRecord}>
+                  <div className="type-switch" role="group" aria-label="记录类型">
+                    <button
+                      type="button"
+                      className={investmentForm.type === 'buy' ? 'selected' : ''}
+                      onClick={() => setInvestmentForm((current) => ({ ...current, type: 'buy' }))}
+                    >
+                      买入
+                    </button>
+                    <button
+                      type="button"
+                      className={investmentForm.type === 'sell' ? 'selected' : ''}
+                      onClick={() => setInvestmentForm((current) => ({ ...current, type: 'sell' }))}
+                    >
+                      卖出
+                    </button>
+                  </div>
+                  <label>
+                    <span>{transactionTypeLabel(investmentForm.type)}日期</span>
+                    <input
+                      type="date"
+                      value={investmentForm.date}
+                      onChange={(event) => {
+                        setNavManual(false);
+                        setInvestmentForm((current) => ({ ...current, date: event.target.value }));
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>基金</span>
+                    <select
+                      value={investmentForm.fundCode}
+                      onChange={(event) => {
+                        setNavManual(false);
+                        setInvestmentForm((current) => ({ ...current, fundCode: event.target.value }));
+                      }}
+                    >
+                      {FUNDS.map((fund) => (
+                        <option key={fund.code} value={fund.code}>{fund.shortName} · {fund.code}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{transactionTypeLabel(investmentForm.type)}金额</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      placeholder="0"
+                      value={investmentForm.amount}
+                      onChange={(event) => setInvestmentForm((current) => ({ ...current, amount: event.target.value }))}
+                    />
+                  </label>
+                  <label className="nav-field">
+                    <span>成交净值</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={investmentForm.nav}
+                      onChange={(event) => {
+                        setNavManual(true);
+                        setInvestmentForm((current) => ({ ...current, nav: event.target.value }));
+                      }}
+                    />
+                    <small>自动匹配 {Number(formNav.nav || 0).toFixed(4)} · {formNav.date}</small>
+                  </label>
+                  <button className="command-button" type="submit">
+                    <Plus size={17} />
+                    <span>新增记录</span>
+                  </button>
+                </form>
+
+                <div className="record-list">
+                  {investmentStats.rows.length ? investmentStats.rows.map((record) => (
+                    <article className="record-row" key={record.id}>
+                      <div>
+                        <strong><span className={`record-type ${record.type}`}>{transactionTypeLabel(record.type)}</span>{record.fund.shortName}</strong>
+                        <small>{record.date} · 成交净值 {record.nav.toFixed(4)}</small>
+                      </div>
+                      <div className="record-numbers">
+                        <strong>{record.type === 'sell' ? '-' : '+'}{formatCurrency(record.amount)}</strong>
+                        <small className={changeClass(record.profit)}>{formatCurrency(record.profit)} · {formatPercent(record.returnRate)}</small>
+                      </div>
+                      <button type="button" className="ghost-button" onClick={() => removeInvestmentRecord(record.id)} title="删除记录" aria-label="删除记录">
+                        <Trash2 size={15} />
+                      </button>
+                    </article>
+                  )) : (
+                    <div className="record-empty">
+                      <strong>暂无记录</strong>
+                      <span>新增买入或卖出记录后生成统计分析。</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="analysis-panel">
+                <div className="analysis-metrics">
+                  <MetricMini label="净投入" value={formatCurrency(investmentStats.totalAmount)} />
+                  <MetricMini label="当前市值" value={formatCurrency(investmentStats.totalValue)} />
+                  <MetricMini label="浮动盈亏" value={formatCurrency(investmentStats.totalProfit)} tone={investmentStats.totalProfit >= 0 ? 'up' : 'down'} />
+                  <MetricMini label="收益率" value={formatPercent(investmentStats.totalReturn)} tone={investmentStats.totalReturn >= 0 ? 'up' : 'down'} />
+                </div>
+
+                {investmentStats.rows.length ? (
+                  <div className="investment-charts">
+                    <div className="terminal-chart">
+                      <p className="eyebrow"><WalletCards size={14} /> 市值占比</p>
+                      <EChart option={allocationChartOption} className="modal-chart" />
+                    </div>
+                    <div className="terminal-chart">
+                      <p className="eyebrow"><Activity size={14} /> 基金盈亏</p>
+                      <EChart option={profitChartOption} className="modal-chart" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="analysis-empty">
+                    <strong>等待记录输入</strong>
+                    <span>统计区将根据当前净值计算持有份额、市值、盈亏与收益率。</span>
+                  </div>
+                )}
+              </section>
+            </div>
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
+
+function MetricMini({ label, value, tone = '' }) {
+  return (
+    <div className={`metric-mini ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}

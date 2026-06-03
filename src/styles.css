@@ -241,19 +241,93 @@ td.down,
   gap: 8px;
 }
 
-.fund-row {
+.watch-search {
   display: grid;
-  grid-template-columns: 5px minmax(0, 1fr) auto 18px;
+  grid-template-columns: 18px minmax(0, 1fr) 38px;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid rgba(36, 255, 114, 0.24);
+  border-radius: 6px;
+  background: rgba(2, 8, 4, 0.74);
+  color: #7affaa;
+}
+
+.watch-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #eafff0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.watch-search input::placeholder {
+  color: rgba(134, 220, 166, 0.62);
+}
+
+.watch-search button,
+.fund-remove {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(36, 255, 114, 0.28);
+  border-radius: 5px;
+  background: rgba(36, 255, 114, 0.06);
+  color: #24ff72;
+}
+
+.watch-search button {
+  width: 34px;
+  height: 30px;
+}
+
+.watch-search button:disabled,
+.fund-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.34;
+}
+
+.fund-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 8px;
   width: 100%;
   min-height: 72px;
-  padding: 12px;
+  padding: 0;
   border: 1px solid rgba(36, 255, 114, 0.18);
   border-radius: 6px;
   background: rgba(2, 8, 4, 0.72);
   color: #eafff0;
   text-align: left;
+  overflow: hidden;
+}
+
+.fund-select {
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  min-height: 70px;
+  padding: 12px 0 12px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.fund-remove {
+  align-self: center;
+  width: 27px;
+  height: 34px;
+  margin-right: 8px;
+  color: #ff4b63;
+  border-color: rgba(255, 75, 99, 0.34);
+  background: rgba(255, 75, 99, 0.06);
 }
 
 .fund-row.active {
@@ -289,6 +363,24 @@ td.down,
 
 .fund-quote {
   text-align: right;
+}
+
+.watch-empty {
+  display: grid;
+  gap: 7px;
+  padding: 18px 12px;
+  border: 1px dashed rgba(36, 255, 114, 0.24);
+  border-radius: 6px;
+  color: #86dca6;
+  text-align: center;
+}
+
+.watch-empty strong {
+  color: #ff4b63;
+}
+
+.watch-empty span {
+  font-size: 12px;
 }
 
 .chart-heading h2 {
@@ -968,10 +1060,14 @@ tbody tr:hover {
   }
 
   .fund-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .fund-select {
     grid-template-columns: 5px minmax(0, 1fr) auto;
   }
 
-  .fund-row svg {
+  .fund-select > svg {
     display: none;
   }
 

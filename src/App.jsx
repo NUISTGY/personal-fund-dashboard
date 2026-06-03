@@ -23,13 +23,14 @@ import {
   LineChart,
   Plus,
   RefreshCw,
+  Search,
   Sparkles,
   Trash2,
   WalletCards,
   X,
 } from 'lucide-react';
 
-const FUNDS = [
+const DEFAULT_FUNDS = [
   {
     code: '006373',
     name: '国富全球科技互联混合（QDII）人民币A',
@@ -126,6 +127,7 @@ const RANGE_OPTIONS = [
 
 const MAX_HISTORY_DAYS = Math.max(...RANGE_OPTIONS.map((item) => item.days || 0));
 const INVESTMENT_RECORDS_KEY = 'fund-terminal-investment-records-v1';
+const WATCH_FUNDS_KEY = 'fund-terminal-watch-funds-v1';
 const HOLDING_PERIODS = [
   { year: '', month: '' },
   { year: '2026', month: '3' },
@@ -615,6 +617,62 @@ function changeClass(value) {
   return 'flat';
 }
 
+function normalizeFundCode(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 6);
+}
+
+function compactFundName(name, code) {
+  const cleanName = String(name || '').replace(/\s+/g, '').trim();
+  if (!cleanName) return `基金${code}`;
+  return cleanName
+    .replace(/混合型?证券投资基金|股票型?证券投资基金|指数型?证券投资基金|证券投资基金/g, '')
+    .replace(/人民币份额|人民币|联接基金/g, '')
+    .slice(0, 12);
+}
+
+function createCustomFund(code, quote = {}) {
+  const name = quote.name || quote.fundname || `基金 ${code}`;
+  return {
+    code,
+    name,
+    shortName: compactFundName(name, code),
+    tags: ['自选', '待分类'],
+    group: '自选基金',
+    risk: '待评估',
+    note: '由搜索栏加入的自选基金。',
+  };
+}
+
+function mergeDefaultFund(fund) {
+  const code = normalizeFundCode(fund.code);
+  const preset = DEFAULT_FUNDS.find((item) => item.code === code);
+  if (preset) return preset;
+  return {
+    ...createCustomFund(code, fund),
+    ...fund,
+    code,
+    tags: Array.isArray(fund.tags) && fund.tags.length ? fund.tags : ['自选', '待分类'],
+  };
+}
+
+function loadWatchFunds() {
+  try {
+    const raw = localStorage.getItem(WATCH_FUNDS_KEY);
+    if (!raw) return DEFAULT_FUNDS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.length) return DEFAULT_FUNDS;
+    const unique = new Map();
+    parsed.forEach((fund) => {
+      const code = normalizeFundCode(fund.code);
+      if (code.length === 6) unique.set(code, mergeDefaultFund({ ...fund, code }));
+    });
+    return unique.size ? Array.from(unique.values()) : DEFAULT_FUNDS;
+  } catch {
+    localStorage.removeItem(WATCH_FUNDS_KEY);
+    return DEFAULT_FUNDS;
+  }
+}
+
 function calcMetrics(history) {
   if (!history?.length) {
     return { rangeReturn: 0, maxDrawdown: 0, volatility: 0, latestNav: 0 };
@@ -680,9 +738,11 @@ function resolveNavForDate(code, date, historyMap, quoteMap) {
   return { nav: quoteNav || 0, date: quoteDate || '--' };
 }
 
-function buildInvestmentStats(records, quoteMap) {
+function buildInvestmentStats(records, quoteMap, funds) {
   const rows = records.map((record) => {
-    const fund = FUNDS.find((item) => item.code === record.fundCode) || FUNDS[0];
+    const fund = funds.find((item) => item.code === record.fundCode)
+      || DEFAULT_FUNDS.find((item) => item.code === record.fundCode)
+      || createCustomFund(record.fundCode);
     const currentNav = Number((quoteMap[record.fundCode] || FALLBACK_QUOTES[record.fundCode])?.dwjz || record.nav);
     const sign = record.type === 'sell' ? -1 : 1;
     const units = sign * (record.amount / record.nav);
@@ -850,7 +910,8 @@ function StockHoldingList({ rows, loading }) {
 }
 
 export default function App() {
-  const [selectedCode, setSelectedCode] = useState(FUNDS[0].code);
+  const [funds, setFunds] = useState(loadWatchFunds);
+  const [selectedCode, setSelectedCode] = useState(() => loadWatchFunds()[0]?.code || DEFAULT_FUNDS[0].code);
   const [range, setRange] = useState(RANGE_OPTIONS[3]);
   const [quoteMap, setQuoteMap] = useState({});
   const [historyMap, setHistoryMap] = useState({});
@@ -861,18 +922,20 @@ export default function App() {
   const [displayMode, setDisplayMode] = useState('nav');
   const [investmentOpen, setInvestmentOpen] = useState(false);
   const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecords);
+  const [watchQuery, setWatchQuery] = useState('');
+  const [addingFund, setAddingFund] = useState(false);
   const [navManual, setNavManual] = useState(false);
   const [investmentForm, setInvestmentForm] = useState({
     type: 'buy',
     date: formatLocalDate(),
-    fundCode: FUNDS[0].code,
+    fundCode: loadWatchFunds()[0]?.code || DEFAULT_FUNDS[0].code,
     amount: '',
     nav: '',
   });
 
-  const selectedFund = FUNDS.find((fund) => fund.code === selectedCode) || FUNDS[0];
+  const selectedFund = funds.find((fund) => fund.code === selectedCode) || funds[0] || DEFAULT_FUNDS[0];
   const selectedFullHistory = historyMap[selectedCode] || makeFallbackHistory(selectedCode, MAX_HISTORY_DAYS);
-  const selectedQuote = quoteMap[selectedCode] || FALLBACK_QUOTES[selectedCode];
+  const selectedQuote = quoteMap[selectedCode] || FALLBACK_QUOTES[selectedCode] || { dwjz: selectedFullHistory.at(-1)?.nav || '1.0000', gszzl: '0', jzrq: '--' };
   const selectedHistory = range.intraday
     ? makeIntradayHistory(selectedCode, selectedQuote)
     : selectedFullHistory.slice(-range.days);
@@ -886,35 +949,49 @@ export default function App() {
     [historyMap, investmentForm.date, investmentForm.fundCode, quoteMap],
   );
   const investmentStats = useMemo(
-    () => buildInvestmentStats(investmentRecords, quoteMap),
-    [investmentRecords, quoteMap],
+    () => buildInvestmentStats(investmentRecords, quoteMap, funds),
+    [funds, investmentRecords, quoteMap],
   );
 
-  const enrichedFunds = useMemo(() => FUNDS.map((fund) => {
+  const enrichedFunds = useMemo(() => funds.map((fund) => {
     const fullHistory = historyMap[fund.code] || makeFallbackHistory(fund.code, MAX_HISTORY_DAYS);
-    const quote = quoteMap[fund.code] || FALLBACK_QUOTES[fund.code];
+    const quote = quoteMap[fund.code] || FALLBACK_QUOTES[fund.code] || { dwjz: fullHistory.at(-1)?.nav || '1.0000', gszzl: '0', jzrq: '--' };
     const metrics = calcMetrics(range.intraday ? makeIntradayHistory(fund.code, quote) : fullHistory.slice(-range.days));
     return {
       ...fund,
       quote,
       metrics,
     };
-  }), [historyMap, quoteMap, range.days, range.intraday]);
+  }), [funds, historyMap, quoteMap, range.days, range.intraday]);
 
-  const loadData = async () => {
+  const filteredFunds = useMemo(() => {
+    const query = watchQuery.trim().toLowerCase();
+    if (!query) return enrichedFunds;
+    return enrichedFunds.filter((fund) => (
+      fund.code.includes(query)
+      || fund.name.toLowerCase().includes(query)
+      || fund.shortName.toLowerCase().includes(query)
+      || fund.group.toLowerCase().includes(query)
+    ));
+  }, [enrichedFunds, watchQuery]);
+
+  const candidateCode = normalizeFundCode(watchQuery);
+  const canAddFund = candidateCode.length === 6 && !funds.some((fund) => fund.code === candidateCode);
+
+  const loadData = async (targetFunds = funds) => {
     setLoading(true);
     const quoteEntries = [];
-    for (const fund of FUNDS) {
+    for (const fund of targetFunds) {
       try {
         const quote = await jsonpQuote(fund.code);
         quoteEntries.push([fund.code, quote]);
       } catch {
-        quoteEntries.push([fund.code, FALLBACK_QUOTES[fund.code]]);
+        quoteEntries.push([fund.code, FALLBACK_QUOTES[fund.code] || { dwjz: '1.0000', gszzl: '0', jzrq: '--' }]);
       }
     }
 
     const historyEntries = [];
-    for (const fund of FUNDS) {
+    for (const fund of targetFunds) {
       try {
         const history = await historyScript(fund.code, MAX_HISTORY_DAYS);
         historyEntries.push([fund.code, history.length ? history : makeFallbackHistory(fund.code, MAX_HISTORY_DAYS)]);
@@ -930,17 +1007,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  useEffect(() => {
     let timer = 0;
     let active = true;
 
     const scheduleMinuteRefresh = () => {
       timer = window.setTimeout(async () => {
         if (!active) return;
-        await loadData();
+        await loadData(funds);
         if (active) scheduleMinuteRefresh();
       }, nextMinuteDelay());
     };
@@ -950,11 +1023,26 @@ export default function App() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [funds]);
+
+  useEffect(() => {
+    localStorage.setItem(WATCH_FUNDS_KEY, JSON.stringify(funds));
+    loadData(funds);
+  }, [funds]);
 
   useEffect(() => {
     localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(investmentRecords));
   }, [investmentRecords]);
+
+  useEffect(() => {
+    if (funds.some((fund) => fund.code === selectedCode)) return;
+    setSelectedCode(funds[0]?.code || DEFAULT_FUNDS[0].code);
+  }, [funds, selectedCode]);
+
+  useEffect(() => {
+    if (funds.some((fund) => fund.code === investmentForm.fundCode)) return;
+    setInvestmentForm((current) => ({ ...current, fundCode: funds[0]?.code || DEFAULT_FUNDS[0].code }));
+  }, [funds, investmentForm.fundCode]);
 
   useEffect(() => {
     if (navManual) return;
@@ -1007,6 +1095,52 @@ export default function App() {
 
   const removeInvestmentRecord = (id) => {
     setInvestmentRecords((current) => current.filter((record) => record.id !== id));
+  };
+
+  const addWatchFund = async (event) => {
+    event.preventDefault();
+    if (!canAddFund || addingFund) return;
+
+    setAddingFund(true);
+    try {
+      let quote = null;
+      try {
+        quote = await jsonpQuote(candidateCode);
+      } catch {
+        quote = FALLBACK_QUOTES[candidateCode] || {};
+      }
+      const nextFund = mergeDefaultFund(createCustomFund(candidateCode, quote));
+      setFunds((current) => {
+        if (current.some((fund) => fund.code === nextFund.code)) return current;
+        return [...current, nextFund];
+      });
+      setSelectedCode(nextFund.code);
+      setWatchQuery('');
+    } finally {
+      setAddingFund(false);
+    }
+  };
+
+  const removeWatchFund = (code) => {
+    if (funds.length <= 1) return;
+    const nextFunds = funds.filter((fund) => fund.code !== code);
+    setFunds(nextFunds);
+    setQuoteMap((current) => {
+      const next = { ...current };
+      delete next[code];
+      return next;
+    });
+    setHistoryMap((current) => {
+      const next = { ...current };
+      delete next[code];
+      return next;
+    });
+    setStockHoldingMap((current) => {
+      const next = { ...current };
+      delete next[code];
+      return next;
+    });
+    if (selectedCode === code) setSelectedCode(nextFunds[0]?.code || DEFAULT_FUNDS[0].code);
   };
 
   const mainChartOption = useMemo(() => {
@@ -1138,7 +1272,7 @@ export default function App() {
         <div>
           <p className="eyebrow"><Sparkles size={16} /> 基金看板</p>
           <h1>个人基金组合中枢</h1>
-          <p className="hero-copy">整合 7 支候选基金的估值、净值趋势、关键指标与底层持仓，呈现轻量终端看板。</p>
+          <p className="hero-copy">整合 {funds.length} 支自选基金的估值、净值趋势、关键指标与底层持仓，呈现轻量终端看板。</p>
         </div>
         <div className="hero-actions">
           <button className="icon-button" type="button" onClick={() => setInvestmentOpen(true)} title="投资记录" aria-label="投资记录">
@@ -1161,29 +1295,59 @@ export default function App() {
               <p className="eyebrow"><Layers3 size={15} /> 自选基金</p>
               <h2>观察列表</h2>
             </div>
-            <span className="mini-badge">{loading ? '同步中' : '已就绪'}</span>
+            <span className="mini-badge">{loading ? '同步中' : `${funds.length} 支`}</span>
           </div>
 
+          <form className="watch-search" onSubmit={addWatchFund}>
+            <Search size={15} />
+            <input
+              type="search"
+              inputMode="numeric"
+              placeholder="搜索 / 输入基金代码"
+              value={watchQuery}
+              onChange={(event) => setWatchQuery(event.target.value)}
+            />
+            <button type="submit" disabled={!canAddFund || addingFund} title="加入自选" aria-label="加入自选">
+              <Plus size={15} />
+            </button>
+          </form>
+
           <div className="fund-list">
-            {enrichedFunds.map((fund) => (
-              <button
+            {filteredFunds.map((fund) => (
+              <article
                 className={`fund-row ${fund.code === selectedCode ? 'active' : ''}`}
                 key={fund.code}
-                type="button"
-                onClick={() => setSelectedCode(fund.code)}
               >
-                <span className="fund-accent" style={{ background: getChangeColor(fund.quote?.gszzl), color: getChangeColor(fund.quote?.gszzl) }} />
-                <span className="fund-copy">
-                  <strong>{fund.shortName}</strong>
-                  <small>{fund.code} · {fund.group}</small>
-                </span>
-                <span className="fund-quote">
-                  <strong>{Number(fund.quote?.dwjz || 0).toFixed(4)}</strong>
-                  <small className={changeClass(fund.quote?.gszzl)}>{formatPercent(fund.quote?.gszzl)}</small>
-                </span>
-                <ChevronRight size={17} />
-              </button>
+                <button className="fund-select" type="button" onClick={() => setSelectedCode(fund.code)}>
+                  <span className="fund-accent" style={{ background: getChangeColor(fund.quote?.gszzl), color: getChangeColor(fund.quote?.gszzl) }} />
+                  <span className="fund-copy">
+                    <strong>{fund.shortName}</strong>
+                    <small>{fund.code} · {fund.group}</small>
+                  </span>
+                  <span className="fund-quote">
+                    <strong>{Number(fund.quote?.dwjz || 0).toFixed(4)}</strong>
+                    <small className={changeClass(fund.quote?.gszzl)}>{formatPercent(fund.quote?.gszzl)}</small>
+                  </span>
+                  <ChevronRight size={17} />
+                </button>
+                <button
+                  className="fund-remove"
+                  type="button"
+                  onClick={() => removeWatchFund(fund.code)}
+                  disabled={funds.length <= 1}
+                  title="删除自选"
+                  aria-label={`删除${fund.shortName}`}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </article>
             ))}
+            {!filteredFunds.length && (
+              <div className="watch-empty">
+                <strong>没有匹配基金</strong>
+                <span>输入 6 位基金代码后可加入自选。</span>
+              </div>
+            )}
           </div>
         </aside>
 
@@ -1365,7 +1529,7 @@ export default function App() {
                         setInvestmentForm((current) => ({ ...current, fundCode: event.target.value }));
                       }}
                     >
-                      {FUNDS.map((fund) => (
+                      {funds.map((fund) => (
                         <option key={fund.code} value={fund.code}>{fund.shortName} · {fund.code}</option>
                       ))}
                     </select>

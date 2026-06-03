@@ -2,6 +2,7 @@ node_modules/
 dist/
 artifacts/
 output/
+data/investment-records.json
 .playwright-cli/
 .DS_Store
 npm-debug.log*

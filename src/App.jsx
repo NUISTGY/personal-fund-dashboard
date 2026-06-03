@@ -130,6 +130,7 @@ const RANGE_OPTIONS = [
 const INVESTMENT_COLORS = ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6', '#d8ffe8', '#0eb85b'];
 const MAX_HISTORY_DAYS = Math.max(...RANGE_OPTIONS.map((item) => item.days || 0));
 const INVESTMENT_RECORDS_KEY = 'fund-terminal-investment-records-v1';
+const INVESTMENT_RECORDS_API = '/api/investment-records';
 const WATCH_FUNDS_KEY = 'fund-terminal-watch-funds-v1';
 const HOLDING_PERIODS = [
   { year: '', month: '' },
@@ -727,27 +728,56 @@ function calcMetrics(history) {
   };
 }
 
-function loadInvestmentRecords() {
+function normalizeInvestmentRecords(records) {
+  if (!Array.isArray(records)) return [];
+  return records
+    .map((record) => ({
+      id: String(record.id || crypto.randomUUID()),
+      type: record.type === 'sell' ? 'sell' : 'buy',
+      date: record.date,
+      fundCode: record.fundCode,
+      amount: Number(record.amount),
+      nav: Number(record.nav ?? record.buyNav),
+      navDate: record.navDate || record.buyNavDate || record.date,
+    }))
+    .filter((record) => (
+      record.date
+      && record.fundCode
+      && Number.isFinite(record.amount)
+      && record.amount > 0
+      && Number.isFinite(record.nav)
+      && record.nav > 0
+    ));
+}
+
+function loadInvestmentRecordsBackup() {
   try {
     const raw = localStorage.getItem(INVESTMENT_RECORDS_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((record) => ({
-        id: String(record.id || crypto.randomUUID()),
-        type: record.type === 'sell' ? 'sell' : 'buy',
-        date: record.date,
-        fundCode: record.fundCode,
-        amount: Number(record.amount),
-        nav: Number(record.nav ?? record.buyNav),
-        navDate: record.navDate || record.buyNavDate || record.date,
-      }))
-      .filter((record) => record.date && record.fundCode && Number.isFinite(record.amount) && Number.isFinite(record.nav));
+    return normalizeInvestmentRecords(JSON.parse(raw));
   } catch {
     localStorage.removeItem(INVESTMENT_RECORDS_KEY);
     return [];
   }
+}
+
+async function fetchInvestmentRecordsFile() {
+  const response = await fetch(INVESTMENT_RECORDS_API);
+  if (!response.ok) throw new Error('investment records load failed');
+  const payload = await response.json();
+  return normalizeInvestmentRecords(payload.records || payload);
+}
+
+async function persistInvestmentRecordsFile(records) {
+  const normalized = normalizeInvestmentRecords(records);
+  localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(normalized));
+  const response = await fetch(INVESTMENT_RECORDS_API, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records: normalized }),
+  });
+  if (!response.ok) throw new Error('investment records save failed');
+  return normalized;
 }
 
 function resolveHistoryPointForDate(code, date, historyMap) {
@@ -1168,7 +1198,8 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState('');
   const [displayMode, setDisplayMode] = useState('nav');
   const [investmentOpen, setInvestmentOpen] = useState(false);
-  const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecords);
+  const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecordsBackup);
+  const [investmentRecordsReady, setInvestmentRecordsReady] = useState(false);
   const [watchQuery, setWatchQuery] = useState('');
   const [addingFund, setAddingFund] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
@@ -1297,8 +1328,38 @@ export default function App() {
   }, [funds]);
 
   useEffect(() => {
-    localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(investmentRecords));
-  }, [investmentRecords]);
+    let active = true;
+
+    fetchInvestmentRecordsFile()
+      .then(async (fileRecords) => {
+        if (!active) return;
+        const backupRecords = loadInvestmentRecordsBackup();
+        if (fileRecords.length || !backupRecords.length) {
+          setInvestmentRecords(fileRecords);
+        } else {
+          setInvestmentRecords(backupRecords);
+          await persistInvestmentRecordsFile(backupRecords);
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setInvestmentRecords(loadInvestmentRecordsBackup());
+      })
+      .finally(() => {
+        if (active) setInvestmentRecordsReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!investmentRecordsReady) return;
+    persistInvestmentRecordsFile(investmentRecords).catch(() => {
+      localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(investmentRecords));
+    });
+  }, [investmentRecords, investmentRecordsReady]);
 
   useEffect(() => {
     if (funds.some((fund) => fund.code === selectedCode)) return;

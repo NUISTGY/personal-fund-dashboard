@@ -821,31 +821,45 @@ function buildInvestmentStats(records, quoteMap, funds) {
   };
 }
 
-function buildDailyProfitGrid(holdings, historyMap) {
+function buildDailyProfitGrid(records, funds, historyMap) {
+  const codes = Array.from(new Set(records.map((record) => record.fundCode)));
   const dateSet = new Set();
-  holdings.forEach((holding) => {
-    const history = historyMap[holding.code] || makeFallbackHistory(holding.code, MAX_HISTORY_DAYS);
+  codes.forEach((code) => {
+    const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
     history.slice(-18).forEach((item) => dateSet.add(item.date));
   });
 
   const dates = Array.from(dateSet).sort().slice(-14);
   return dates.map((date) => {
-    const details = holdings.map((holding) => {
-      const history = historyMap[holding.code] || makeFallbackHistory(holding.code, MAX_HISTORY_DAYS);
+    const details = codes.map((code) => {
+      const fund = funds.find((item) => item.code === code)
+        || DEFAULT_FUNDS.find((item) => item.code === code)
+        || createCustomFund(code);
+      const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
       const index = history.findIndex((item) => item.date === date);
       const current = history[index];
       const previous = index > 0 ? history[index - 1] : null;
+      const units = records
+        .filter((record) => record.fundCode === code && record.date <= date)
+        .reduce((sum, record) => {
+          const direction = record.type === 'sell' ? -1 : 1;
+          return sum + direction * (record.amount / record.nav);
+        }, 0);
+
+      if (!current || !previous || Math.abs(units) <= 0.000001) return null;
+
       const dailyChange = current && previous ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
-      const dailyProfit = current && previous ? holding.units * (current.nav - previous.nav) : 0;
+      const dailyProfit = units * (current.nav - previous.nav);
       return {
-        code: holding.code,
-        name: holding.name,
+        code,
+        name: fund.shortName,
         date,
         nav: current?.nav || null,
+        units,
         dailyChange,
         dailyProfit,
       };
-    });
+    }).filter(Boolean);
     const totalProfit = details.reduce((sum, item) => sum + item.dailyProfit, 0);
     return { date, totalProfit, details };
   });
@@ -1161,8 +1175,8 @@ export default function App() {
     [investmentStats.byFund],
   );
   const dailyProfitGrid = useMemo(
-    () => buildDailyProfitGrid(investmentHoldings, historyMap),
-    [historyMap, investmentHoldings],
+    () => buildDailyProfitGrid(investmentRecords, funds, historyMap),
+    [funds, historyMap, investmentRecords],
   );
   const selectedDailyProfit = dailyProfitGrid.find((item) => item.date === selectedDailyDate) || dailyProfitGrid.at(-1);
 

@@ -759,7 +759,9 @@ tbody tr:hover {
   width: min(1180px, 100%);
   max-height: min(820px, calc(100vh - 56px));
   padding: 18px;
-  overflow: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .modal-header {
@@ -814,6 +816,8 @@ tbody tr:hover {
   grid-template-columns: 0.95fr 1.25fr;
   align-items: stretch;
   gap: 16px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .record-panel,
@@ -823,6 +827,7 @@ tbody tr:hover {
   align-content: stretch;
   gap: 12px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .record-form {
@@ -916,8 +921,8 @@ tbody tr:hover {
   display: grid;
   gap: 8px;
   min-height: 180px;
-  max-height: 430px;
-  overflow: auto;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .record-row {
@@ -1001,6 +1006,9 @@ tbody tr:hover {
 .investment-analytics {
   display: grid;
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .investment-charts {
@@ -1212,7 +1220,6 @@ tbody tr:hover {
 
 .record-list {
   min-height: 0;
-  max-height: 440px;
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -1344,6 +1351,9 @@ tbody tr:hover {
 
 .daily-detail-list.compact {
   margin-top: 10px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .console-profit-card {
@@ -1355,6 +1365,9 @@ tbody tr:hover {
   gap: 8px;
   margin-top: 12px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  max-height: 210px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .profit-console-line {

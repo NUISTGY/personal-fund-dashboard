@@ -1898,14 +1898,10 @@ export default function App() {
                       <div className="daily-detail-list compact">
                         {(selectedDailyProfit?.details || []).map((item) => (
                           <div className={`daily-detail-row ${changeClass(item.dailyProfit)}`} key={item.code}>
-                            <div>
-                              <strong>{item.name}</strong>
-                              <small>{item.code} · {item.nav ? `净值 ${item.nav.toFixed(4)}` : '无当日净值'}</small>
-                            </div>
-                            <div>
-                              <strong>{formatCurrency(item.dailyProfit)}</strong>
-                              <small>{formatPercent(item.dailyChange)}</small>
-                            </div>
+                            <strong>{item.name}</strong>
+                            <small>{item.code} · {item.nav ? `净值 ${item.nav.toFixed(4)}` : '无当日净值'}</small>
+                            <em>{formatCurrency(item.dailyProfit)}</em>
+                            <span>{formatPercent(item.dailyChange)}</span>
                           </div>
                         ))}
                       </div>
@@ -1920,7 +1916,9 @@ export default function App() {
                             <strong>{item.name}</strong>
                             <code>{item.code}</code>
                             <em>{formatCurrency(item.profit)}</em>
-                            <small>{formatPercent(item.returnRate)} · 净投入 {formatCurrency(item.netAmount)} · 当前 {formatCurrency(item.currentValue)}</small>
+                            <small>{formatPercent(item.returnRate)}</small>
+                            <small>净投入 {formatCurrency(item.netAmount)}</small>
+                            <small>当前 {formatCurrency(item.currentValue)}</small>
                           </div>
                         ))}
                       </div>

@@ -1005,10 +1005,10 @@ tbody tr:hover {
 
 .investment-analytics {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
+  overflow: hidden;
+  padding-right: 0;
 }
 
 .investment-charts {
@@ -1265,8 +1265,8 @@ tbody tr:hover {
 
 .allocation-strip-labels {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  gap: 8px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  gap: 6px 10px;
 }
 
 .allocation-strip-labels span {
@@ -1279,6 +1279,8 @@ tbody tr:hover {
   font-weight: 900;
   line-height: 1.3;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .allocation-strip-labels i {
@@ -1289,7 +1291,7 @@ tbody tr:hover {
 }
 
 .daily-grid-panel {
-  padding: 13px;
+  padding: 12px;
   border: 1px solid rgba(36, 255, 114, 0.2);
   border-radius: 6px;
   background: rgba(2, 8, 4, 0.76);
@@ -1310,15 +1312,15 @@ tbody tr:hover {
 .daily-profit-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 7px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .daily-profit-cell {
   display: grid;
-  gap: 5px;
-  min-height: 58px;
-  padding: 8px 5px;
+  gap: 4px;
+  min-height: 50px;
+  padding: 7px 5px;
   border: 1px solid rgba(134, 220, 166, 0.2);
   border-radius: 6px;
   background: rgba(134, 220, 166, 0.05);
@@ -1354,10 +1356,63 @@ tbody tr:hover {
 }
 
 .daily-detail-list.compact {
-  margin-top: 10px;
-  max-height: 210px;
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  max-height: 118px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.daily-detail-list.compact .daily-detail-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(142px, 1.25fr) 72px 58px;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 9px;
+}
+
+.daily-detail-list.compact .daily-detail-row strong,
+.daily-detail-list.compact .daily-detail-row small,
+.daily-detail-list.compact .daily-detail-row em,
+.daily-detail-list.compact .daily-detail-row span {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.daily-detail-list.compact .daily-detail-row strong {
+  font-size: 15px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.daily-detail-list.compact .daily-detail-row small {
+  color: #74c994;
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.daily-detail-list.compact .daily-detail-row em {
+  color: #ff4b63;
+  font-style: normal;
+  font-weight: 900;
+  font-size: 15px;
+  text-align: right;
+}
+
+.daily-detail-list.compact .daily-detail-row.down em {
+  color: #24ff72;
+}
+
+.daily-detail-list.compact .daily-detail-row span {
+  color: #86dca6;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: right;
 }
 
 .console-profit-card {
@@ -1366,20 +1421,21 @@ tbody tr:hover {
 
 .profit-console {
   display: grid;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 3px;
+  margin-top: 8px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  max-height: 210px;
+  max-height: 112px;
   overflow-y: auto;
   padding-right: 4px;
 }
 
 .profit-console-line {
   display: grid;
-  grid-template-columns: 14px minmax(90px, 1fr) 58px auto;
-  gap: 8px;
-  align-items: baseline;
-  padding: 8px 0;
+  grid-template-columns: 14px minmax(96px, 1fr) 62px 74px 62px 102px 102px;
+  gap: 7px;
+  align-items: center;
+  min-height: 27px;
+  padding: 3px 0;
   border-bottom: 1px solid rgba(36, 255, 114, 0.12);
 }
 
@@ -1391,10 +1447,16 @@ tbody tr:hover {
 
 .profit-console-line strong {
   color: #eafff0;
+  font-size: 15px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profit-console-line em {
   color: #ff4b63;
+  font-size: 15px;
   font-style: normal;
   font-weight: 900;
   text-align: right;
@@ -1405,9 +1467,15 @@ tbody tr:hover {
 }
 
 .profit-console-line small {
-  grid-column: 2 / -1;
   font-size: 12px;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.profit-console-line code,
+.profit-console-line small {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .analysis-empty {

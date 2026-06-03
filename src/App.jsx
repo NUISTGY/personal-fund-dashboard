@@ -616,6 +616,24 @@ function resolveLatestNavDate(quote, history) {
   return quoteDate || historyDate || '--';
 }
 
+function enhanceQuoteWithHistory(code, quote, history) {
+  const latestHistory = [...(history || [])].reverse().find((item) => Number.isFinite(item.nav));
+  if (!latestHistory) return quote || FALLBACK_QUOTES[code] || { dwjz: '1.0000', gszzl: '0', jzrq: '--' };
+
+  const baseQuote = quote || FALLBACK_QUOTES[code] || {};
+  const quoteDate = String(baseQuote.jzrq || '').slice(0, 10);
+  if (quoteDate && quoteDate >= latestHistory.date) return baseQuote;
+
+  return {
+    ...baseQuote,
+    dwjz: latestHistory.nav.toFixed(4),
+    gsz: latestHistory.nav.toFixed(4),
+    gszzl: Number.isFinite(latestHistory.change) ? String(latestHistory.change) : baseQuote.gszzl || '0',
+    jzrq: latestHistory.date,
+    gztime: `${latestHistory.date} 00:00`,
+  };
+}
+
 function nextMinuteDelay(date = new Date()) {
   return Math.max(1000, ((60 - date.getSeconds()) * 1000) - date.getMilliseconds());
 }
@@ -732,28 +750,44 @@ function loadInvestmentRecords() {
   }
 }
 
+function resolveHistoryPointForDate(code, date, historyMap) {
+  const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
+  let index = -1;
+  for (let cursor = history.length - 1; cursor >= 0; cursor -= 1) {
+    if (history[cursor].date <= date && Number.isFinite(history[cursor].nav)) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return { current: null, previous: null };
+  return {
+    current: history[index],
+    previous: index > 0 ? history[index - 1] : null,
+  };
+}
+
 function resolveNavForDate(code, date, historyMap, quoteMap) {
   const quote = quoteMap[code] || FALLBACK_QUOTES[code];
   const quoteDate = quote?.jzrq;
   const quoteNav = Number(quote?.dwjz);
-  if (quoteDate && quoteDate <= date && Number.isFinite(quoteNav)) {
-    return { nav: quoteNav, date: quoteDate };
-  }
+  const { current: matched } = resolveHistoryPointForDate(code, date, historyMap);
+  const candidates = [];
+  if (quoteDate && quoteDate <= date && Number.isFinite(quoteNav)) candidates.push({ nav: quoteNav, date: quoteDate });
+  if (matched) candidates.push({ nav: matched.nav, date: matched.date });
+  if (candidates.length) return candidates.sort((a, b) => a.date.localeCompare(b.date)).at(-1);
 
   const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
-  const matched = [...history].reverse().find((item) => item.date <= date && Number.isFinite(item.nav));
-  if (matched) return { nav: matched.nav, date: matched.date };
   const first = history.find((item) => Number.isFinite(item.nav));
   if (first) return { nav: first.nav, date: first.date };
   return { nav: quoteNav || 0, date: quoteDate || '--' };
 }
 
-function buildInvestmentStats(records, quoteMap, funds) {
+function buildInvestmentStats(records, quoteMap, historyMap, funds) {
   const rows = records.map((record) => {
     const fund = funds.find((item) => item.code === record.fundCode)
       || DEFAULT_FUNDS.find((item) => item.code === record.fundCode)
       || createCustomFund(record.fundCode);
-    const currentNav = Number((quoteMap[record.fundCode] || FALLBACK_QUOTES[record.fundCode])?.dwjz || record.nav);
+    const currentNav = Number(resolveNavForDate(record.fundCode, formatLocalDate(), historyMap, quoteMap).nav || record.nav);
     const sign = record.type === 'sell' ? -1 : 1;
     const units = sign * (record.amount / record.nav);
     const netAmount = sign * record.amount;
@@ -828,6 +862,7 @@ function buildDailyProfitGrid(records, funds, historyMap) {
     const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
     history.slice(-18).forEach((item) => dateSet.add(item.date));
   });
+  records.forEach((record) => dateSet.add(record.date));
 
   const dates = Array.from(dateSet).sort().slice(-14);
   return dates.map((date) => {
@@ -835,10 +870,7 @@ function buildDailyProfitGrid(records, funds, historyMap) {
       const fund = funds.find((item) => item.code === code)
         || DEFAULT_FUNDS.find((item) => item.code === code)
         || createCustomFund(code);
-      const history = historyMap[code] || makeFallbackHistory(code, MAX_HISTORY_DAYS);
-      const index = history.findIndex((item) => item.date === date);
-      const current = history[index];
-      const previous = index > 0 ? history[index - 1] : null;
+      const { current, previous } = resolveHistoryPointForDate(code, date, historyMap);
       const units = records
         .filter((record) => record.fundCode === code && record.date <= date)
         .reduce((sum, record) => {
@@ -846,10 +878,10 @@ function buildDailyProfitGrid(records, funds, historyMap) {
           return sum + direction * (record.amount / record.nav);
         }, 0);
 
-      if (!current || !previous || Math.abs(units) <= 0.000001) return null;
+      if (!current || Math.abs(units) <= 0.000001) return null;
 
-      const dailyChange = current && previous ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
-      const dailyProfit = units * (current.nav - previous.nav);
+      const dailyChange = previous ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
+      const dailyProfit = previous ? units * (current.nav - previous.nav) : 0;
       return {
         code,
         name: fund.shortName,
@@ -1167,8 +1199,8 @@ export default function App() {
     [historyMap, investmentForm.date, investmentForm.fundCode, quoteMap],
   );
   const investmentStats = useMemo(
-    () => buildInvestmentStats(investmentRecords, quoteMap, funds),
-    [funds, investmentRecords, quoteMap],
+    () => buildInvestmentStats(investmentRecords, quoteMap, historyMap, funds),
+    [funds, historyMap, investmentRecords, quoteMap],
   );
   const investmentHoldings = useMemo(
     () => investmentStats.byFund.filter((item) => Math.abs(item.units) > 0.000001 && item.currentValue > 0),
@@ -1228,8 +1260,14 @@ export default function App() {
       }
     }
 
-    setQuoteMap(Object.fromEntries(quoteEntries));
-    setHistoryMap(Object.fromEntries(historyEntries));
+    const nextHistoryMap = Object.fromEntries(historyEntries);
+    const rawQuoteMap = Object.fromEntries(quoteEntries);
+    const nextQuoteMap = Object.fromEntries(
+      targetFunds.map((fund) => [fund.code, enhanceQuoteWithHistory(fund.code, rawQuoteMap[fund.code], nextHistoryMap[fund.code])]),
+    );
+
+    setQuoteMap(nextQuoteMap);
+    setHistoryMap(nextHistoryMap);
     setUpdatedAt(formatMinuteMoment());
     setLoading(false);
   };

@@ -130,6 +130,7 @@ const INVESTMENT_COLORS = ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6'
 const MAX_HISTORY_DAYS = Math.max(...RANGE_OPTIONS.map((item) => item.days || 0));
 const INVESTMENT_RECORDS_KEY = 'fund-terminal-investment-records-v1';
 const INVESTMENT_RECORDS_API = '/api/investment-records';
+const PROMPT_TEMPLATE_API = '/api/prompt-template';
 const WATCH_FUNDS_KEY = 'fund-terminal-watch-funds-v1';
 const HOLDING_PERIODS = [
   { year: '', month: '' },
@@ -910,7 +911,7 @@ function formatPlainNumber(value, digits = 2) {
   return number.toFixed(digits);
 }
 
-function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, investmentRecords, quoteMap, generatedAt }) {
+function buildInvestmentTemplateContext({ funds, enrichedFunds, investmentStats, investmentRecords, quoteMap, generatedAt }) {
   const heldPositions = investmentStats.byFund.filter((fund) => Math.abs(Number(fund.units)) > 0.000001);
   const heldCodes = new Set(heldPositions.map((fund) => fund.code));
   const heldRows = investmentStats.rows.filter((record) => heldCodes.has(record.fundCode));
@@ -958,50 +959,7 @@ function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, invest
     tags: fund.tags,
   }));
 
-  return `# 个人基金投资记录与规划分析输入
-
-## AI 分析任务提示词
-请作为专业基金组合分析助手，基于下方完整投资记录与当前基金快照，联网搜索并综合分析后续投资计划。分析时需要：
-1. 先复核交易记录、持有份额、净投入、当前市值、浮动盈亏和收益率之间是否自洽。
-2. 联网核查每只持仓基金的最新净值、历史表现、费率、基金经理或指数规则、持仓披露、规模变化、申赎状态与同类排名。
-3. 联网核查底层主要持仓股票的历史表现、最新财报、盈利指引、估值水平、机构一致预期、投行评级或目标价变化、行业景气度与关键风险事件。
-4. 综合宏观变量、利率、汇率、商品价格、政策变化、地缘风险、行业周期和市场流动性，判断组合中各基金与各股票的潜在驱动因素。
-5. 从资产类别、主题暴露、地区暴露、币种暴露、波动风险、回撤风险、单一方向集中度、相关性和再平衡成本等维度诊断组合问题。
-6. 结合买入/卖出时间、成交净值、当前净值、收益率、持仓份额和资金规模，识别加仓、减仓、止盈、止损或暂停投入的优先级。
-7. 输出可执行的后续投资计划，包括目标仓位区间、分批买入/卖出节奏、月度投入安排、观察指标、触发条件、风险控制规则和复盘周期。
-8. 对联网信息给出来源、日期和可信度判断；如果数据源之间存在冲突，需要列出冲突点并说明采用哪一种口径。
-9. 明确标注不确定性，不得把历史收益直接外推为未来收益，不得给出保证收益或无风险结论。
-
-## 数据生成信息
-- 生成时间：${generatedAt}
-- 当前持仓基金数量：${heldPositions.length}
-- 当前持仓相关交易记录数量：${heldRows.length}
-- 数据口径：买入为正向投入，卖出为负向投入；当前市值按最新可用净值估算；金额单位为人民币。
-
-## 投资统计汇总
-- 净投入：${formatCurrency(heldTotalAmount)}
-- 当前市值：${formatCurrency(heldTotalValue)}
-- 浮动盈亏：${formatCurrency(heldTotalProfit)}
-- 总收益率：${formatPercent(heldTotalReturn)}
-
-## 当前持仓汇总
-| 序号 | 基金 | 代码 | 持有份额 | 当前净值 | 净投入 | 当前市值 | 浮动盈亏 | 收益率 |
-|---:|---|---|---:|---:|---:|---:|---:|---:|
-${positionRows}
-
-## 当前持仓相关交易记录
-| 序号 | 日期 | 类型 | 基金 | 代码 | 金额 | 成交净值 | 净值日期 | 份额变化 | 当前市值贡献 | 浮动盈亏 | 收益率 |
-|---:|---|---|---|---|---:|---:|---|---:|---:|---:|---:|
-${recordRows}
-
-## 当前持仓基金行情与风险快照
-| 序号 | 基金 | 代码 | 分类 | 风险 | 单位净值 | 估算涨跌 | 净值日期 | 当前区间收益 | 当前区间最大回撤 |
-|---:|---|---|---|---|---:|---:|---|---:|---:|
-${fundSnapshot}
-
-## 结构化原始数据
-\`\`\`json
-${JSON.stringify({
+  const structuredRawData = JSON.stringify({
     generatedAt,
     summary: {
       totalAmount: heldTotalAmount,
@@ -1012,7 +970,78 @@ ${JSON.stringify({
     watchFunds,
     positions: heldPositions,
     records: rawRecords,
-  }, null, 2)}
+  }, null, 2);
+
+  return {
+    generatedAt,
+    heldPositions,
+    heldRows,
+    heldRecords,
+    heldFundSnapshots,
+    heldTotalAmount,
+    heldTotalValue,
+    heldTotalProfit,
+    heldTotalReturn,
+    positionRows,
+    recordRows,
+    fundSnapshot,
+    marketRows: fundSnapshot,
+    watchFunds,
+    rawRecords,
+    structuredRawData,
+  };
+}
+
+function resolveTemplateExpression(expression, context) {
+  const trimmed = expression.trim();
+  const directValue = trimmed.split('.').reduce((value, key) => value?.[key], context);
+  if (directValue !== undefined) return directValue;
+
+  const currencyMatch = trimmed.match(/^formatCurrency\(([^)]+)\)$/);
+  if (currencyMatch) return formatCurrency(resolveTemplateExpression(currencyMatch[1], context));
+
+  const percentMatch = trimmed.match(/^formatPercent\(([^)]+)\)$/);
+  if (percentMatch) return formatPercent(resolveTemplateExpression(percentMatch[1], context));
+
+  return '';
+}
+
+function renderPromptTemplate(template, context) {
+  return template.replace(/\$\{([^}]+)\}/g, (_, expression) => String(resolveTemplateExpression(expression, context) ?? ''));
+}
+
+async function loadPromptTemplate() {
+  const response = await fetch(`${PROMPT_TEMPLATE_API}?t=${Date.now()}`);
+  if (!response.ok) throw new Error('prompt template load failed');
+  return response.text();
+}
+
+function buildFallbackInvestmentCopyText(context) {
+  return `# 个人基金投资记录与规划分析输入
+
+## 数据生成信息
+- 生成时间：${context.generatedAt}
+- 当前持仓基金数量：${context.heldPositions.length}
+- 当前持仓相关交易记录数量：${context.heldRows.length}
+
+## 投资统计汇总
+- 净投入：${formatCurrency(context.heldTotalAmount)}
+- 当前市值：${formatCurrency(context.heldTotalValue)}
+- 浮动盈亏：${formatCurrency(context.heldTotalProfit)}
+- 总收益率：${formatPercent(context.heldTotalReturn)}
+
+## 当前持仓汇总
+${context.positionRows}
+
+## 当前持仓相关交易记录
+${context.recordRows}
+
+## 当前持仓基金行情与风险快照
+${context.fundSnapshot}
+
+## 结构化原始数据
+\`\`\`json
+${context.structuredRawData}
 \`\`\`
 `;
 }
@@ -1449,7 +1478,7 @@ export default function App() {
 
   const copyInvestmentBrief = async () => {
     const generatedAt = formatSecondMoment();
-    const text = buildInvestmentCopyText({
+    const context = buildInvestmentTemplateContext({
       funds,
       enrichedFunds,
       investmentStats,
@@ -1459,10 +1488,17 @@ export default function App() {
     });
 
     try {
+      const template = await loadPromptTemplate();
+      const text = renderPromptTemplate(template, context);
       await copyTextToClipboard(text);
       setCopyStatus('已复制');
     } catch {
-      setCopyStatus('复制失败');
+      try {
+        await copyTextToClipboard(buildFallbackInvestmentCopyText(context));
+        setCopyStatus('已复制');
+      } catch {
+        setCopyStatus('复制失败');
+      }
     }
 
     window.setTimeout(() => setCopyStatus(''), 1800);

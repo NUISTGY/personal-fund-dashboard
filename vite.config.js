@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 const investmentRecordsFile = path.resolve(process.cwd(), 'data/investment-records.json');
+const promptTemplateFile = path.resolve(process.cwd(), 'src/prompt.md');
 
 function normalizeInvestmentRecord(record) {
   return {
@@ -114,6 +115,35 @@ function investmentRecordsPlugin() {
   };
 }
 
+function promptTemplatePlugin() {
+  const handlePromptTemplate = async (request, response, next) => {
+    if (!request.url?.startsWith('/api/prompt-template')) {
+      next();
+      return;
+    }
+
+    response.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+
+    try {
+      const template = await readFile(promptTemplateFile, 'utf-8');
+      response.end(template);
+    } catch {
+      response.statusCode = 404;
+      response.end('');
+    }
+  };
+
+  return {
+    name: 'prompt-template-md',
+    configureServer(server) {
+      server.middlewares.use(handlePromptTemplate);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(handlePromptTemplate);
+    },
+  };
+}
+
 function yahooQuoteJsonpPlugin() {
   const handleYahooJsonp = async (request, response, next) => {
     if (!request.url?.startsWith('/api/yahoo-jsonp')) {
@@ -159,7 +189,7 @@ function yahooQuoteJsonpPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), investmentRecordsPlugin(), yahooQuoteJsonpPlugin()],
+  plugins: [react(), investmentRecordsPlugin(), promptTemplatePlugin(), yahooQuoteJsonpPlugin()],
   server: {
     proxy: {
       '/api/yahoo': {

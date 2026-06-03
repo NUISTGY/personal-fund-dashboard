@@ -608,6 +608,13 @@ function formatChartBoundary(item, intraday = false) {
   return item.date;
 }
 
+function resolveLatestNavDate(quote, history) {
+  const quoteDate = String(quote?.jzrq || '').slice(0, 10);
+  const historyDate = String(history?.at(-1)?.date || '').slice(0, 10);
+  if (quoteDate && historyDate) return quoteDate > historyDate ? quoteDate : historyDate;
+  return quoteDate || historyDate || '--';
+}
+
 function nextMinuteDelay(date = new Date()) {
   return Math.max(1000, ((60 - date.getSeconds()) * 1000) - date.getMilliseconds());
 }
@@ -809,22 +816,32 @@ function formatPlainNumber(value, digits = 2) {
 }
 
 function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, investmentRecords, quoteMap, generatedAt }) {
-  const fundSnapshot = enrichedFunds.map((fund, index) => (
-    `| ${index + 1} | ${fund.shortName} | ${fund.code} | ${fund.group} | ${fund.risk} | ${Number(fund.quote?.dwjz || 0).toFixed(4)} | ${formatPercent(fund.quote?.gszzl)} | ${fund.quote?.jzrq || '--'} | ${formatPercent(fund.metrics.rangeReturn)} | ${formatPercent(fund.metrics.maxDrawdown)} |`
+  const heldPositions = investmentStats.byFund.filter((fund) => Math.abs(Number(fund.units)) > 0.000001);
+  const heldCodes = new Set(heldPositions.map((fund) => fund.code));
+  const heldRows = investmentStats.rows.filter((record) => heldCodes.has(record.fundCode));
+  const heldRecords = investmentRecords.filter((record) => heldCodes.has(record.fundCode));
+  const heldFundSnapshots = enrichedFunds.filter((fund) => heldCodes.has(fund.code));
+  const heldTotalAmount = heldPositions.reduce((sum, fund) => sum + fund.netAmount, 0);
+  const heldTotalValue = heldPositions.reduce((sum, fund) => sum + fund.currentValue, 0);
+  const heldTotalProfit = heldTotalValue - heldTotalAmount;
+  const heldTotalReturn = Math.abs(heldTotalAmount) ? (heldTotalProfit / Math.abs(heldTotalAmount)) * 100 : 0;
+
+  const fundSnapshot = heldFundSnapshots.map((fund, index) => (
+    `| ${index + 1} | ${fund.shortName} | ${fund.code} | ${fund.group} | ${fund.risk} | ${Number(fund.quote?.dwjz || 0).toFixed(4)} | ${formatPercent(fund.quote?.gszzl)} | ${fund.navDate || fund.quote?.jzrq || '--'} | ${formatPercent(fund.metrics.rangeReturn)} | ${formatPercent(fund.metrics.maxDrawdown)} |`
   )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |';
 
-  const positionRows = investmentStats.byFund.map((fund, index) => (
+  const positionRows = heldPositions.map((fund, index) => (
     `| ${index + 1} | ${fund.name} | ${fund.code} | ${formatPlainNumber(fund.units, 4)} | ${fund.currentNav.toFixed(4)} | ${formatCurrency(fund.netAmount)} | ${formatCurrency(fund.currentValue)} | ${formatCurrency(fund.profit)} | ${formatPercent(fund.returnRate)} |`
   )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- |';
 
-  const recordRows = investmentStats.rows
+  const recordRows = heldRows
     .slice()
     .sort((a, b) => `${a.date}-${a.id}`.localeCompare(`${b.date}-${b.id}`))
     .map((record, index) => (
       `| ${index + 1} | ${record.date} | ${transactionTypeLabel(record.type)} | ${record.fund.shortName} | ${record.fundCode} | ${formatCurrency(record.amount)} | ${record.nav.toFixed(4)} | ${record.navDate || '--'} | ${formatPlainNumber(record.units, 4)} | ${formatCurrency(record.currentValue)} | ${formatCurrency(record.profit)} | ${formatPercent(record.returnRate)} |`
     )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |';
 
-  const rawRecords = investmentRecords
+  const rawRecords = heldRecords
     .slice()
     .sort((a, b) => `${a.date}-${a.id}`.localeCompare(`${b.date}-${b.id}`))
     .map((record) => ({
@@ -837,7 +854,7 @@ function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, invest
       currentNav: Number((quoteMap[record.fundCode] || FALLBACK_QUOTES[record.fundCode])?.dwjz || record.nav),
     }));
 
-  const watchFunds = funds.map((fund) => ({
+  const watchFunds = funds.filter((fund) => heldCodes.has(fund.code)).map((fund) => ({
     code: fund.code,
     name: fund.name,
     shortName: fund.shortName,
@@ -849,36 +866,40 @@ function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, invest
   return `# 个人基金投资记录与规划分析输入
 
 ## AI 分析任务提示词
-请作为专业基金组合分析助手，基于下方完整投资记录与当前基金快照，完成后续投资计划分析。分析时需要：
+请作为专业基金组合分析助手，基于下方完整投资记录与当前基金快照，联网搜索并综合分析后续投资计划。分析时需要：
 1. 先复核交易记录、持有份额、净投入、当前市值、浮动盈亏和收益率之间是否自洽。
-2. 从资产类别、主题暴露、地区暴露、波动风险、回撤风险、单一方向集中度等维度诊断组合问题。
-3. 结合买入/卖出时间、成交净值、当前净值、收益率，识别加仓、减仓、止盈、止损或暂停投入的优先级。
-4. 输出可执行的后续投资计划，包括目标仓位区间、分批买入/卖出节奏、观察指标、触发条件和风险控制规则。
-5. 明确标注不确定性，不得把历史收益直接外推为未来收益。
+2. 联网核查每只持仓基金的最新净值、历史表现、费率、基金经理或指数规则、持仓披露、规模变化、申赎状态与同类排名。
+3. 联网核查底层主要持仓股票的历史表现、最新财报、盈利指引、估值水平、机构一致预期、投行评级或目标价变化、行业景气度与关键风险事件。
+4. 综合宏观变量、利率、汇率、商品价格、政策变化、地缘风险、行业周期和市场流动性，判断组合中各基金与各股票的潜在驱动因素。
+5. 从资产类别、主题暴露、地区暴露、币种暴露、波动风险、回撤风险、单一方向集中度、相关性和再平衡成本等维度诊断组合问题。
+6. 结合买入/卖出时间、成交净值、当前净值、收益率、持仓份额和资金规模，识别加仓、减仓、止盈、止损或暂停投入的优先级。
+7. 输出可执行的后续投资计划，包括目标仓位区间、分批买入/卖出节奏、月度投入安排、观察指标、触发条件、风险控制规则和复盘周期。
+8. 对联网信息给出来源、日期和可信度判断；如果数据源之间存在冲突，需要列出冲突点并说明采用哪一种口径。
+9. 明确标注不确定性，不得把历史收益直接外推为未来收益，不得给出保证收益或无风险结论。
 
 ## 数据生成信息
 - 生成时间：${generatedAt}
-- 自选基金数量：${funds.length}
-- 投资记录数量：${investmentRecords.length}
+- 当前持仓基金数量：${heldPositions.length}
+- 当前持仓相关交易记录数量：${heldRows.length}
 - 数据口径：买入为正向投入，卖出为负向投入；当前市值按最新可用净值估算；金额单位为人民币。
 
 ## 投资统计汇总
-- 净投入：${formatCurrency(investmentStats.totalAmount)}
-- 当前市值：${formatCurrency(investmentStats.totalValue)}
-- 浮动盈亏：${formatCurrency(investmentStats.totalProfit)}
-- 总收益率：${formatPercent(investmentStats.totalReturn)}
+- 净投入：${formatCurrency(heldTotalAmount)}
+- 当前市值：${formatCurrency(heldTotalValue)}
+- 浮动盈亏：${formatCurrency(heldTotalProfit)}
+- 总收益率：${formatPercent(heldTotalReturn)}
 
 ## 当前持仓汇总
 | 序号 | 基金 | 代码 | 持有份额 | 当前净值 | 净投入 | 当前市值 | 浮动盈亏 | 收益率 |
 |---:|---|---|---:|---:|---:|---:|---:|---:|
 ${positionRows}
 
-## 全部交易记录
+## 当前持仓相关交易记录
 | 序号 | 日期 | 类型 | 基金 | 代码 | 金额 | 成交净值 | 净值日期 | 份额变化 | 当前市值贡献 | 浮动盈亏 | 收益率 |
 |---:|---|---|---|---|---:|---:|---|---:|---:|---:|---:|
 ${recordRows}
 
-## 当前自选基金行情与风险快照
+## 当前持仓基金行情与风险快照
 | 序号 | 基金 | 代码 | 分类 | 风险 | 单位净值 | 估算涨跌 | 净值日期 | 当前区间收益 | 当前区间最大回撤 |
 |---:|---|---|---|---|---:|---:|---|---:|---:|
 ${fundSnapshot}
@@ -888,13 +909,13 @@ ${fundSnapshot}
 ${JSON.stringify({
     generatedAt,
     summary: {
-      totalAmount: investmentStats.totalAmount,
-      totalValue: investmentStats.totalValue,
-      totalProfit: investmentStats.totalProfit,
-      totalReturn: investmentStats.totalReturn,
+      totalAmount: heldTotalAmount,
+      totalValue: heldTotalValue,
+      totalProfit: heldTotalProfit,
+      totalReturn: heldTotalReturn,
     },
     watchFunds,
-    positions: investmentStats.byFund,
+    positions: heldPositions,
     records: rawRecords,
   }, null, 2)}
 \`\`\`
@@ -1077,6 +1098,7 @@ export default function App() {
   const selectedMetrics = calcMetrics(selectedHistory);
   const selectedStockHolding = stockHoldingMap[selectedCode] || { date: '--', rows: [] };
   const selectedChangeColor = getChangeColor(selectedQuote?.gszzl);
+  const selectedNavDate = resolveLatestNavDate(selectedQuote, selectedFullHistory);
   const chartStartDate = formatChartBoundary(selectedHistory[0], range.intraday);
   const chartEndDate = formatChartBoundary(selectedHistory[selectedHistory.length - 1], range.intraday);
   const formNav = useMemo(
@@ -1096,6 +1118,7 @@ export default function App() {
       ...fund,
       quote,
       metrics,
+      navDate: resolveLatestNavDate(quote, fullHistory),
     };
   }), [funds, historyMap, quoteMap, range.days, range.intraday]);
 
@@ -1552,7 +1575,7 @@ export default function App() {
             <MetricMini label="区间收益" value={formatPercent(selectedMetrics.rangeReturn)} tone={selectedMetrics.rangeReturn >= 0 ? 'up' : 'down'} />
             <MetricMini label="最大回撤" value={formatPercent(selectedMetrics.maxDrawdown)} tone="down" />
             <MetricMini label="年化波动" value={formatPercent(selectedMetrics.volatility)} />
-            <MetricMini label="净值日期" value={selectedQuote?.jzrq || '--'} />
+            <MetricMini label="净值日期" value={selectedNavDate} />
           </div>
         </section>
       </section>

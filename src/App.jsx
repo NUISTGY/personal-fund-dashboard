@@ -821,6 +821,36 @@ function buildInvestmentStats(records, quoteMap, funds) {
   };
 }
 
+function buildDailyProfitGrid(holdings, historyMap) {
+  const dateSet = new Set();
+  holdings.forEach((holding) => {
+    const history = historyMap[holding.code] || makeFallbackHistory(holding.code, MAX_HISTORY_DAYS);
+    history.slice(-18).forEach((item) => dateSet.add(item.date));
+  });
+
+  const dates = Array.from(dateSet).sort().slice(-14);
+  return dates.map((date) => {
+    const details = holdings.map((holding) => {
+      const history = historyMap[holding.code] || makeFallbackHistory(holding.code, MAX_HISTORY_DAYS);
+      const index = history.findIndex((item) => item.date === date);
+      const current = history[index];
+      const previous = index > 0 ? history[index - 1] : null;
+      const dailyChange = current && previous ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
+      const dailyProfit = current && previous ? holding.units * (current.nav - previous.nav) : 0;
+      return {
+        code: holding.code,
+        name: holding.name,
+        date,
+        nav: current?.nav || null,
+        dailyChange,
+        dailyProfit,
+      };
+    });
+    const totalProfit = details.reduce((sum, item) => sum + item.dailyProfit, 0);
+    return { date, totalProfit, details };
+  });
+}
+
 function transactionTypeLabel(type) {
   return type === 'sell' ? '卖出' : '买入';
 }
@@ -1096,7 +1126,7 @@ export default function App() {
   const [watchQuery, setWatchQuery] = useState('');
   const [addingFund, setAddingFund] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
-  const [dailyBreakdownOpen, setDailyBreakdownOpen] = useState(false);
+  const [selectedDailyDate, setSelectedDailyDate] = useState('');
   const [navManual, setNavManual] = useState(false);
   const [investmentForm, setInvestmentForm] = useState({
     type: 'buy',
@@ -1130,16 +1160,11 @@ export default function App() {
     () => investmentStats.byFund.filter((item) => Math.abs(item.units) > 0.000001 && item.currentValue > 0),
     [investmentStats.byFund],
   );
-  const allocationGradient = useMemo(() => {
-    if (!investmentHoldings.length || investmentStats.totalValue <= 0) return 'rgba(36,255,114,0.16) 0 100%';
-    let cursor = 0;
-    return investmentHoldings.map((item, index) => {
-      const start = cursor;
-      const size = (item.currentValue / investmentStats.totalValue) * 100;
-      cursor += size;
-      return `${INVESTMENT_COLORS[index % INVESTMENT_COLORS.length]} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
-    }).join(', ');
-  }, [investmentHoldings, investmentStats.totalValue]);
+  const dailyProfitGrid = useMemo(
+    () => buildDailyProfitGrid(investmentHoldings, historyMap),
+    [historyMap, investmentHoldings],
+  );
+  const selectedDailyProfit = dailyProfitGrid.find((item) => item.date === selectedDailyDate) || dailyProfitGrid.at(-1);
 
   const enrichedFunds = useMemo(() => funds.map((fund) => {
     const fullHistory = historyMap[fund.code] || makeFallbackHistory(fund.code, MAX_HISTORY_DAYS);
@@ -1232,6 +1257,12 @@ export default function App() {
     if (funds.some((fund) => fund.code === investmentForm.fundCode)) return;
     setInvestmentForm((current) => ({ ...current, fundCode: funds[0]?.code || DEFAULT_FUNDS[0].code }));
   }, [funds, investmentForm.fundCode]);
+
+  useEffect(() => {
+    if (!dailyProfitGrid.length) return;
+    if (dailyProfitGrid.some((item) => item.date === selectedDailyDate)) return;
+    setSelectedDailyDate(dailyProfitGrid.at(-1).date);
+  }, [dailyProfitGrid, selectedDailyDate]);
 
   useEffect(() => {
     if (navManual) return;
@@ -1758,83 +1789,88 @@ export default function App() {
                 <div className="analysis-metrics investment-summary-grid">
                   <MetricMini label="净投入" value={formatCurrency(investmentStats.totalAmount)} />
                   <MetricMini label="当前市值" value={formatCurrency(investmentStats.totalValue)} />
-                  <button
-                    className={`metric-mini daily-toggle ${dailyBreakdownOpen ? 'selected' : ''} ${investmentStats.totalDailyProfit >= 0 ? 'up' : 'down'}`}
-                    type="button"
-                    onClick={() => setDailyBreakdownOpen((current) => !current)}
-                  >
-                    <span>今日盈亏</span>
-                    <strong>{formatCurrency(investmentStats.totalDailyProfit)}</strong>
-                  </button>
-                  <MetricMini label="累计盈亏" value={`${formatCurrency(investmentStats.totalProfit)} · ${formatPercent(investmentStats.totalReturn)}`} tone={investmentStats.totalProfit >= 0 ? 'up' : 'down'} />
+                  <MetricMini label="累计盈亏" value={formatCurrency(investmentStats.totalProfit)} tone={investmentStats.totalProfit >= 0 ? 'up' : 'down'} />
+                  <MetricMini label="收益率" value={formatPercent(investmentStats.totalReturn)} tone={investmentStats.totalReturn >= 0 ? 'up' : 'down'} />
                 </div>
 
                 {investmentStats.rows.length ? (
                   <div className="investment-analytics">
-                    {dailyBreakdownOpen && (
-                      <div className="terminal-chart daily-detail-panel">
-                        <p className="eyebrow"><Activity size={14} /> 今日盈亏明细</p>
-                        <div className="daily-detail-list">
-                          {investmentHoldings.map((item) => (
-                            <div className={`daily-detail-row ${changeClass(item.dailyProfit)}`} key={item.code}>
-                              <div>
-                                <strong>{item.name}</strong>
-                                <small>{item.code} · 当日涨跌 {formatPercent(item.dailyChange)}</small>
-                              </div>
-                              <div>
-                                <strong>{formatCurrency(item.dailyProfit)}</strong>
-                                <small>当前 {formatCurrency(item.currentValue)}</small>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                    <div className="terminal-chart allocation-card compact">
+                      <p className="eyebrow"><WalletCards size={14} /> 市值占比</p>
+                      <div className="allocation-strip">
+                        {investmentHoldings.map((item, index) => {
+                          const percent = investmentStats.totalValue > 0 ? (item.currentValue / investmentStats.totalValue) * 100 : 0;
+                          return (
+                            <i
+                              key={item.code}
+                              style={{
+                                width: `${Math.max(2, percent)}%`,
+                                background: INVESTMENT_COLORS[index % INVESTMENT_COLORS.length],
+                              }}
+                              title={`${item.name} ${formatPercent(percent, 1)}`}
+                            />
+                          );
+                        })}
                       </div>
-                    )}
-                    <div className="investment-charts refined">
-                      <div className="terminal-chart allocation-card">
-                        <p className="eyebrow"><WalletCards size={14} /> 市值占比</p>
-                        <div className="allocation-visual">
-                          <div className="allocation-ring" style={{ background: `conic-gradient(${allocationGradient})` }}>
+                      <div className="allocation-strip-labels">
+                        {investmentHoldings.map((item, index) => {
+                          const percent = investmentStats.totalValue > 0 ? (item.currentValue / investmentStats.totalValue) * 100 : 0;
+                          return (
+                            <span key={item.code}>
+                              <i style={{ background: INVESTMENT_COLORS[index % INVESTMENT_COLORS.length] }} />
+                              {item.name} {formatPercent(percent, 1)}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="daily-grid-panel">
+                      <div className="panel-inline-title">
+                        <p className="eyebrow"><Activity size={14} /> 日期盈亏</p>
+                        <strong>{selectedDailyProfit?.date || '--'} · {formatCurrency(selectedDailyProfit?.totalProfit || 0)}</strong>
+                      </div>
+                      <div className="daily-profit-grid">
+                        {dailyProfitGrid.map((day) => (
+                          <button
+                            className={`daily-profit-cell ${changeClass(day.totalProfit)} ${day.date === selectedDailyProfit?.date ? 'selected' : ''}`}
+                            key={day.date}
+                            type="button"
+                            onClick={() => setSelectedDailyDate(day.date)}
+                          >
+                            <span>{day.date.slice(5)}</span>
+                            <strong>{formatCurrency(day.totalProfit)}</strong>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="daily-detail-list compact">
+                        {(selectedDailyProfit?.details || []).map((item) => (
+                          <div className={`daily-detail-row ${changeClass(item.dailyProfit)}`} key={item.code}>
                             <div>
-                              <span>总市值</span>
-                              <strong>{formatCurrency(investmentStats.totalValue)}</strong>
+                              <strong>{item.name}</strong>
+                              <small>{item.code} · {item.nav ? `净值 ${item.nav.toFixed(4)}` : '无当日净值'}</small>
+                            </div>
+                            <div>
+                              <strong>{formatCurrency(item.dailyProfit)}</strong>
+                              <small>{formatPercent(item.dailyChange)}</small>
                             </div>
                           </div>
-                          <div className="allocation-legend">
-                            {investmentHoldings.map((item, index) => {
-                              const percent = investmentStats.totalValue > 0 ? (item.currentValue / investmentStats.totalValue) * 100 : 0;
-                              return (
-                                <div className="allocation-legend-row" key={item.code}>
-                                  <i style={{ background: INVESTMENT_COLORS[index % INVESTMENT_COLORS.length] }} />
-                                  <strong>{item.name}</strong>
-                                  <span>{formatPercent(percent, 1)}</span>
-                                  <small>{formatCurrency(item.currentValue)}</small>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
+                        ))}
                       </div>
-                      <div className="terminal-chart cumulative-card">
-                        <p className="eyebrow"><Activity size={14} /> 累计盈亏统计</p>
-                        <div className="profit-bars">
-                          {investmentHoldings.map((item) => {
-                            const maxProfit = Math.max(...investmentHoldings.map((fund) => Math.abs(fund.profit)), 1);
-                            const width = Math.max(2, Math.min(100, (Math.abs(item.profit) / maxProfit) * 100));
-                            return (
-                              <div className={`analysis-bar-row ${changeClass(item.profit)}`} key={item.code}>
-                                <div className="analysis-bar-head">
-                                  <strong>{item.name}</strong>
-                                  <span>{formatCurrency(item.profit)} · {formatPercent(item.returnRate)}</span>
-                                </div>
-                                <div className="analysis-track">
-                                  <i style={{ width: `${width}%` }} />
-                                </div>
-                                <small>净投入 {formatCurrency(item.netAmount)} · 当前 {formatCurrency(item.currentValue)}</small>
-                              </div>
-                            );
-                          })}
-                        </div>
+                    </div>
+
+                    <div className="terminal-chart console-profit-card">
+                      <p className="eyebrow"><Activity size={14} /> 累计盈亏日志</p>
+                      <div className="profit-console">
+                        {investmentHoldings.map((item) => (
+                          <div className={`profit-console-line ${changeClass(item.profit)}`} key={item.code}>
+                            <span>{'>'}</span>
+                            <strong>{item.name}</strong>
+                            <code>{item.code}</code>
+                            <em>{formatCurrency(item.profit)}</em>
+                            <small>{formatPercent(item.returnRate)} · 净投入 {formatCurrency(item.netAmount)} · 当前 {formatCurrency(item.currentValue)}</small>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   </div>

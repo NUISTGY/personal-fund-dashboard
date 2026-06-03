@@ -822,6 +822,7 @@ tbody tr:hover {
   grid-template-rows: auto minmax(180px, 1fr);
   align-content: stretch;
   gap: 12px;
+  min-height: 0;
 }
 
 .record-form {
@@ -1207,6 +1208,189 @@ tbody tr:hover {
   border-radius: 6px;
   color: #86dca6;
   text-align: center;
+}
+
+.record-list {
+  min-height: 0;
+  max-height: 440px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.investment-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  padding: 2px 0 6px;
+  border-bottom: 1px solid rgba(36, 255, 114, 0.18);
+}
+
+.investment-summary-grid .metric-mini {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.investment-summary-grid .metric-mini strong {
+  font-size: 23px;
+}
+
+.allocation-card.compact {
+  min-height: 0;
+}
+
+.allocation-strip {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  margin: 14px 0 10px;
+  border: 1px solid rgba(36, 255, 114, 0.26);
+  border-radius: 999px;
+  background: rgba(36, 255, 114, 0.06);
+}
+
+.allocation-strip i {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  box-shadow: 0 0 16px currentColor;
+}
+
+.allocation-strip-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.allocation-strip-labels span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #eafff0;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.allocation-strip-labels i {
+  width: 7px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.daily-grid-panel {
+  padding: 13px;
+  border: 1px solid rgba(36, 255, 114, 0.2);
+  border-radius: 6px;
+  background: rgba(2, 8, 4, 0.76);
+}
+
+.panel-inline-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-inline-title strong {
+  color: #ff4b63;
+  font-size: 15px;
+}
+
+.daily-profit-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.daily-profit-cell {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 8px 5px;
+  border: 1px solid rgba(134, 220, 166, 0.2);
+  border-radius: 6px;
+  background: rgba(134, 220, 166, 0.05);
+  color: #86dca6;
+  text-align: center;
+}
+
+.daily-profit-cell span {
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.daily-profit-cell strong {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.daily-profit-cell.up {
+  border-color: rgba(255, 75, 99, 0.42);
+  background: rgba(255, 75, 99, 0.08);
+  color: #ff4b63;
+}
+
+.daily-profit-cell.down {
+  border-color: rgba(36, 255, 114, 0.42);
+  background: rgba(36, 255, 114, 0.08);
+  color: #24ff72;
+}
+
+.daily-profit-cell.selected {
+  border-color: #eafff0;
+  box-shadow: 0 0 16px rgba(36, 255, 114, 0.25);
+}
+
+.daily-detail-list.compact {
+  margin-top: 10px;
+}
+
+.console-profit-card {
+  min-height: 0;
+}
+
+.profit-console {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.profit-console-line {
+  display: grid;
+  grid-template-columns: 14px minmax(90px, 1fr) 58px auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(36, 255, 114, 0.12);
+}
+
+.profit-console-line span,
+.profit-console-line code,
+.profit-console-line small {
+  color: #74c994;
+}
+
+.profit-console-line strong {
+  color: #eafff0;
+}
+
+.profit-console-line em {
+  color: #ff4b63;
+  font-style: normal;
+  font-weight: 900;
+  text-align: right;
+}
+
+.profit-console-line.down em {
+  color: #24ff72;
+}
+
+.profit-console-line small {
+  grid-column: 2 / -1;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .analysis-empty {

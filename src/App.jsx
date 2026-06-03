@@ -120,11 +120,10 @@ const FALLBACK_QUOTES = {
 };
 
 const RANGE_OPTIONS = [
-  { label: '1天', hours: 24, intraday: true },
   { label: '1月', days: 22 },
   { label: '3月', days: 66 },
   { label: '6月', days: 132 },
-  { label: '1年', days: 252 },
+  { label: '12月', days: 252 },
 ];
 
 const INVESTMENT_COLORS = ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6', '#d8ffe8', '#0eb85b'];
@@ -519,32 +518,6 @@ function makeFallbackHistory(code, days) {
   });
 }
 
-function makeIntradayHistory(code, quote) {
-  const latestNav = Number(quote?.dwjz || FALLBACK_QUOTES[code]?.dwjz || 1);
-  const quoteChange = Number(quote?.gszzl || 0);
-  const previousNav = latestNav / (1 + (Number.isFinite(quoteChange) ? quoteChange : 0) / 100);
-  const now = new Date();
-  const points = 49;
-
-  return Array.from({ length: points }, (_, index) => {
-    const progress = index / (points - 1);
-    const date = new Date(now.getTime() - (24 * 60 * 60 * 1000) + (progress * 24 * 60 * 60 * 1000));
-    const seed = Number(code.slice(-3));
-    const wave = Math.sin((index + seed) / 4) * 0.0028 + Math.cos((index + seed) / 9) * 0.0018;
-    const baseNav = previousNav + ((latestNav - previousNav) * progress);
-    const nav = index === points - 1 ? latestNav : baseNav * (1 + wave);
-    const previous = index === 0 ? previousNav : previousNav + ((latestNav - previousNav) * ((index - 1) / (points - 1)));
-
-    return {
-      date: date.toISOString(),
-      label: date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }),
-      nav: Number(nav.toFixed(4)),
-      accumulative: Number(nav.toFixed(4)),
-      change: Number((((nav - previous) / previous) * 100).toFixed(2)),
-    };
-  });
-}
-
 function formatPercent(value, digits = 2) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '--';
@@ -598,15 +571,8 @@ function formatMinuteMoment(date = new Date()) {
   });
 }
 
-function formatChartBoundary(item, intraday = false) {
+function formatChartBoundary(item) {
   if (!item?.date) return '--';
-  if (intraday) {
-    const date = new Date(item.date);
-    const month = `${date.getMonth() + 1}`.padStart(2, '0');
-    const day = `${date.getDate()}`.padStart(2, '0');
-    const time = item.label || date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-    return `${month}-${day} ${time}`;
-  }
   return item.date;
 }
 
@@ -907,11 +873,18 @@ function buildDailyProfitGrid(records, funds, historyMap) {
           const direction = record.type === 'sell' ? -1 : 1;
           return sum + direction * (record.amount / record.nav);
         }, 0);
+      const settledUnits = current ? records
+        .filter((record) => record.fundCode === code && record.date <= current.date)
+        .reduce((sum, record) => {
+          const direction = record.type === 'sell' ? -1 : 1;
+          return sum + direction * (record.amount / record.nav);
+        }, 0) : 0;
 
       if (!current || Math.abs(units) <= 0.000001) return null;
 
-      const dailyChange = previous ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
-      const dailyProfit = previous ? units * (current.nav - previous.nav) : 0;
+      const hasSettledPosition = Math.abs(settledUnits) > 0.000001;
+      const dailyChange = previous && hasSettledPosition ? ((current.nav - previous.nav) / previous.nav) * 100 : 0;
+      const dailyProfit = previous && hasSettledPosition ? settledUnits * (current.nav - previous.nav) : 0;
       return {
         code,
         name: fund.shortName,
@@ -1189,7 +1162,7 @@ function StockHoldingList({ rows, loading }) {
 export default function App() {
   const [funds, setFunds] = useState(loadWatchFunds);
   const [selectedCode, setSelectedCode] = useState(() => loadWatchFunds()[0]?.code || DEFAULT_FUNDS[0].code);
-  const [range, setRange] = useState(RANGE_OPTIONS[3]);
+  const [range, setRange] = useState(RANGE_OPTIONS[2]);
   const [quoteMap, setQuoteMap] = useState({});
   const [historyMap, setHistoryMap] = useState({});
   const [stockHoldingMap, setStockHoldingMap] = useState({});
@@ -1216,15 +1189,13 @@ export default function App() {
   const selectedFund = funds.find((fund) => fund.code === selectedCode) || funds[0] || DEFAULT_FUNDS[0];
   const selectedFullHistory = historyMap[selectedCode] || makeFallbackHistory(selectedCode, MAX_HISTORY_DAYS);
   const selectedQuote = quoteMap[selectedCode] || FALLBACK_QUOTES[selectedCode] || { dwjz: selectedFullHistory.at(-1)?.nav || '1.0000', gszzl: '0', jzrq: '--' };
-  const selectedHistory = range.intraday
-    ? makeIntradayHistory(selectedCode, selectedQuote)
-    : selectedFullHistory.slice(-range.days);
+  const selectedHistory = selectedFullHistory.slice(-range.days);
   const selectedMetrics = calcMetrics(selectedHistory);
   const selectedStockHolding = stockHoldingMap[selectedCode] || { date: '--', rows: [] };
   const selectedChangeColor = getChangeColor(selectedQuote?.gszzl);
   const selectedNavDate = resolveLatestNavDate(selectedQuote, selectedFullHistory);
-  const chartStartDate = formatChartBoundary(selectedHistory[0], range.intraday);
-  const chartEndDate = formatChartBoundary(selectedHistory[selectedHistory.length - 1], range.intraday);
+  const chartStartDate = formatChartBoundary(selectedHistory[0]);
+  const chartEndDate = formatChartBoundary(selectedHistory[selectedHistory.length - 1]);
   const formNav = useMemo(
     () => resolveNavForDate(investmentForm.fundCode, investmentForm.date, historyMap, quoteMap),
     [historyMap, investmentForm.date, investmentForm.fundCode, quoteMap],
@@ -1246,14 +1217,14 @@ export default function App() {
   const enrichedFunds = useMemo(() => funds.map((fund) => {
     const fullHistory = historyMap[fund.code] || makeFallbackHistory(fund.code, MAX_HISTORY_DAYS);
     const quote = quoteMap[fund.code] || FALLBACK_QUOTES[fund.code] || { dwjz: fullHistory.at(-1)?.nav || '1.0000', gszzl: '0', jzrq: '--' };
-    const metrics = calcMetrics(range.intraday ? makeIntradayHistory(fund.code, quote) : fullHistory.slice(-range.days));
+    const metrics = calcMetrics(fullHistory.slice(-range.days));
     return {
       ...fund,
       quote,
       metrics,
       navDate: resolveLatestNavDate(quote, fullHistory),
     };
-  }), [funds, historyMap, quoteMap, range.days, range.intraday]);
+  }), [funds, historyMap, quoteMap, range.days]);
 
   const filteredFunds = useMemo(() => {
     const query = watchQuery.trim().toLowerCase();
@@ -1498,7 +1469,7 @@ export default function App() {
   };
 
   const mainChartOption = useMemo(() => {
-    const dates = selectedHistory.map((item) => (range.intraday ? item.label : item.date.slice(5)));
+    const dates = selectedHistory.map((item) => item.date.slice(5));
     const values = selectedHistory.map((item) => item.nav);
     const returns = selectedHistory.map((item, index) => {
       if (index === 0) return 0;
@@ -1508,7 +1479,7 @@ export default function App() {
     const minValue = Math.min(...data);
     const maxValue = Math.max(...data);
     const axisPadding = Math.max((maxValue - minValue) * 0.12, displayMode === 'nav' ? 0.02 : 1);
-    const labelInterval = range.intraday ? 5 : range.days <= 22 ? 2 : range.days <= 66 ? 6 : range.days <= 132 ? 12 : 24;
+    const labelInterval = range.days <= 22 ? 2 : range.days <= 66 ? 6 : range.days <= 132 ? 12 : 24;
 
     return {
       animationDuration: 600,
@@ -1558,7 +1529,7 @@ export default function App() {
         },
       ],
     };
-  }, [displayMode, range.days, range.intraday, selectedChangeColor, selectedHistory]);
+  }, [displayMode, range.days, selectedChangeColor, selectedHistory]);
 
   return (
     <main className="app-shell">

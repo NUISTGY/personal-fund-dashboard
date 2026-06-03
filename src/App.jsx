@@ -17,8 +17,10 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   CalendarClock,
+  Check,
   ChevronRight,
   ClipboardList,
+  Copy,
   Layers3,
   LineChart,
   Plus,
@@ -800,6 +802,138 @@ function transactionTypeLabel(type) {
   return type === 'sell' ? '卖出' : '买入';
 }
 
+function formatPlainNumber(value, digits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toFixed(digits);
+}
+
+function buildInvestmentCopyText({ funds, enrichedFunds, investmentStats, investmentRecords, quoteMap, generatedAt }) {
+  const fundSnapshot = enrichedFunds.map((fund, index) => (
+    `| ${index + 1} | ${fund.shortName} | ${fund.code} | ${fund.group} | ${fund.risk} | ${Number(fund.quote?.dwjz || 0).toFixed(4)} | ${formatPercent(fund.quote?.gszzl)} | ${fund.quote?.jzrq || '--'} | ${formatPercent(fund.metrics.rangeReturn)} | ${formatPercent(fund.metrics.maxDrawdown)} |`
+  )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |';
+
+  const positionRows = investmentStats.byFund.map((fund, index) => (
+    `| ${index + 1} | ${fund.name} | ${fund.code} | ${formatPlainNumber(fund.units, 4)} | ${fund.currentNav.toFixed(4)} | ${formatCurrency(fund.netAmount)} | ${formatCurrency(fund.currentValue)} | ${formatCurrency(fund.profit)} | ${formatPercent(fund.returnRate)} |`
+  )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- |';
+
+  const recordRows = investmentStats.rows
+    .slice()
+    .sort((a, b) => `${a.date}-${a.id}`.localeCompare(`${b.date}-${b.id}`))
+    .map((record, index) => (
+      `| ${index + 1} | ${record.date} | ${transactionTypeLabel(record.type)} | ${record.fund.shortName} | ${record.fundCode} | ${formatCurrency(record.amount)} | ${record.nav.toFixed(4)} | ${record.navDate || '--'} | ${formatPlainNumber(record.units, 4)} | ${formatCurrency(record.currentValue)} | ${formatCurrency(record.profit)} | ${formatPercent(record.returnRate)} |`
+    )).join('\n') || '| -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |';
+
+  const rawRecords = investmentRecords
+    .slice()
+    .sort((a, b) => `${a.date}-${a.id}`.localeCompare(`${b.date}-${b.id}`))
+    .map((record) => ({
+      type: transactionTypeLabel(record.type),
+      date: record.date,
+      fundCode: record.fundCode,
+      amount: record.amount,
+      nav: record.nav,
+      navDate: record.navDate,
+      currentNav: Number((quoteMap[record.fundCode] || FALLBACK_QUOTES[record.fundCode])?.dwjz || record.nav),
+    }));
+
+  const watchFunds = funds.map((fund) => ({
+    code: fund.code,
+    name: fund.name,
+    shortName: fund.shortName,
+    group: fund.group,
+    risk: fund.risk,
+    tags: fund.tags,
+  }));
+
+  return `# 个人基金投资记录与规划分析输入
+
+## AI 分析任务提示词
+请作为专业基金组合分析助手，基于下方完整投资记录与当前基金快照，完成后续投资计划分析。分析时需要：
+1. 先复核交易记录、持有份额、净投入、当前市值、浮动盈亏和收益率之间是否自洽。
+2. 从资产类别、主题暴露、地区暴露、波动风险、回撤风险、单一方向集中度等维度诊断组合问题。
+3. 结合买入/卖出时间、成交净值、当前净值、收益率，识别加仓、减仓、止盈、止损或暂停投入的优先级。
+4. 输出可执行的后续投资计划，包括目标仓位区间、分批买入/卖出节奏、观察指标、触发条件和风险控制规则。
+5. 明确标注不确定性，不得把历史收益直接外推为未来收益。
+
+## 数据生成信息
+- 生成时间：${generatedAt}
+- 自选基金数量：${funds.length}
+- 投资记录数量：${investmentRecords.length}
+- 数据口径：买入为正向投入，卖出为负向投入；当前市值按最新可用净值估算；金额单位为人民币。
+
+## 投资统计汇总
+- 净投入：${formatCurrency(investmentStats.totalAmount)}
+- 当前市值：${formatCurrency(investmentStats.totalValue)}
+- 浮动盈亏：${formatCurrency(investmentStats.totalProfit)}
+- 总收益率：${formatPercent(investmentStats.totalReturn)}
+
+## 当前持仓汇总
+| 序号 | 基金 | 代码 | 持有份额 | 当前净值 | 净投入 | 当前市值 | 浮动盈亏 | 收益率 |
+|---:|---|---|---:|---:|---:|---:|---:|---:|
+${positionRows}
+
+## 全部交易记录
+| 序号 | 日期 | 类型 | 基金 | 代码 | 金额 | 成交净值 | 净值日期 | 份额变化 | 当前市值贡献 | 浮动盈亏 | 收益率 |
+|---:|---|---|---|---|---:|---:|---|---:|---:|---:|---:|
+${recordRows}
+
+## 当前自选基金行情与风险快照
+| 序号 | 基金 | 代码 | 分类 | 风险 | 单位净值 | 估算涨跌 | 净值日期 | 当前区间收益 | 当前区间最大回撤 |
+|---:|---|---|---|---|---:|---:|---|---:|---:|
+${fundSnapshot}
+
+## 结构化原始数据
+\`\`\`json
+${JSON.stringify({
+    generatedAt,
+    summary: {
+      totalAmount: investmentStats.totalAmount,
+      totalValue: investmentStats.totalValue,
+      totalProfit: investmentStats.totalProfit,
+      totalReturn: investmentStats.totalReturn,
+    },
+    watchFunds,
+    positions: investmentStats.byFund,
+    records: rawRecords,
+  }, null, 2)}
+\`\`\`
+`;
+}
+
+function fallbackCopyText(text) {
+  return new Promise((resolve, reject) => {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'readonly');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      textarea.remove();
+      if (ok) resolve();
+      else reject(new Error('copy failed'));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back to textarea copy when browser permissions block Clipboard API.
+    }
+  }
+
+  await fallbackCopyText(text);
+}
+
 function EChart({ option, className }) {
   const ref = React.useRef(null);
 
@@ -924,6 +1058,7 @@ export default function App() {
   const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecords);
   const [watchQuery, setWatchQuery] = useState('');
   const [addingFund, setAddingFund] = useState(false);
+  const [copyStatus, setCopyStatus] = useState('');
   const [navManual, setNavManual] = useState(false);
   const [investmentForm, setInvestmentForm] = useState({
     type: 'buy',
@@ -1141,6 +1276,27 @@ export default function App() {
       return next;
     });
     if (selectedCode === code) setSelectedCode(nextFunds[0]?.code || DEFAULT_FUNDS[0].code);
+  };
+
+  const copyInvestmentBrief = async () => {
+    const generatedAt = formatSecondMoment();
+    const text = buildInvestmentCopyText({
+      funds,
+      enrichedFunds,
+      investmentStats,
+      investmentRecords,
+      quoteMap,
+      generatedAt,
+    });
+
+    try {
+      await copyTextToClipboard(text);
+      setCopyStatus('已复制');
+    } catch {
+      setCopyStatus('复制失败');
+    }
+
+    window.setTimeout(() => setCopyStatus(''), 1800);
   };
 
   const mainChartOption = useMemo(() => {
@@ -1485,9 +1641,21 @@ export default function App() {
                 <p className="eyebrow"><ClipboardList size={15} /> 投资记录</p>
                 <h2 id="investment-title">个人投资统计</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setInvestmentOpen(false)} title="关闭" aria-label="关闭">
-                <X size={18} />
-              </button>
+              <div className="modal-actions">
+                <button
+                  className={`copy-brief-button ${copyStatus === '已复制' ? 'copied' : ''}`}
+                  type="button"
+                  onClick={copyInvestmentBrief}
+                  title="复制投资分析输入"
+                  aria-label="复制投资分析输入"
+                >
+                  {copyStatus === '已复制' ? <Check size={17} /> : <Copy size={17} />}
+                  <span>{copyStatus || '复制分析包'}</span>
+                </button>
+                <button className="icon-button" type="button" onClick={() => setInvestmentOpen(false)} title="关闭" aria-label="关闭">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             <div className="investment-layout">

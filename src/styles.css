@@ -997,9 +997,69 @@ tbody tr:hover {
   background: rgba(2, 8, 4, 0.76);
 }
 
-.modal-chart {
-  width: 100%;
-  height: 260px;
+.allocation-bars,
+.profit-bars {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.analysis-bar-row {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(36, 255, 114, 0.16);
+  border-radius: 6px;
+  background: rgba(36, 255, 114, 0.04);
+}
+
+.analysis-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysis-bar-head strong {
+  color: #eafff0;
+  font-size: 14px;
+}
+
+.analysis-bar-head span {
+  color: #ff4b63;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.analysis-track {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(36, 255, 114, 0.24);
+  border-radius: 999px;
+  background: rgba(36, 255, 114, 0.06);
+}
+
+.analysis-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #24ff72, #ff4b63);
+  box-shadow: 0 0 16px rgba(36, 255, 114, 0.28);
+}
+
+.analysis-bar-row.down .analysis-bar-head span {
+  color: #24ff72;
+}
+
+.analysis-bar-row.down .analysis-track i {
+  background: linear-gradient(90deg, #24ff72, #0eb85b);
+}
+
+.analysis-bar-row small {
+  color: #74c994;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .record-empty,

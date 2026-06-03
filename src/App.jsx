@@ -1385,63 +1385,6 @@ export default function App() {
     };
   }, [displayMode, range.days, range.intraday, selectedChangeColor, selectedHistory]);
 
-  const allocationChartOption = useMemo(() => ({
-    color: ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6', '#d8ffe8', '#0eb85b'],
-    tooltip: {
-      trigger: 'item',
-      backgroundColor: 'rgba(5,12,8,0.92)',
-      borderColor: 'rgba(36,255,114,0.55)',
-      textStyle: { color: '#d8ffe8' },
-      formatter: (params) => `${params.name}<br/>${formatCurrency(params.value)} · ${params.percent}%`,
-    },
-    series: [
-      {
-        type: 'pie',
-        radius: ['48%', '72%'],
-        center: ['50%', '52%'],
-        label: { color: '#d8ffe8', formatter: '{b}\\n{d}%' },
-        labelLine: { lineStyle: { color: 'rgba(36,255,114,0.46)' } },
-        data: investmentStats.byFund
-          .filter((item) => item.currentValue > 0)
-          .map((item) => ({ name: item.name, value: Number(item.currentValue.toFixed(2)) })),
-      },
-    ],
-  }), [investmentStats.byFund]);
-
-  const profitChartOption = useMemo(() => ({
-    grid: { left: 8, right: 8, top: 18, bottom: 14, containLabel: true },
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(5,12,8,0.92)',
-      borderColor: 'rgba(36,255,114,0.55)',
-      textStyle: { color: '#d8ffe8' },
-      valueFormatter: (value) => formatCurrency(value),
-    },
-    xAxis: {
-      type: 'category',
-      data: investmentStats.byFund.map((item) => item.name),
-      axisLine: { lineStyle: { color: 'rgba(36,255,114,0.28)' } },
-      axisTick: { show: false },
-      axisLabel: { color: '#7affaa', interval: 0 },
-    },
-    yAxis: {
-      type: 'value',
-      axisLabel: { color: '#7affaa', formatter: (value) => `${Math.round(value / 1000)}k` },
-      splitLine: { lineStyle: { color: 'rgba(36,255,114,0.12)' } },
-    },
-    series: [
-      {
-        type: 'bar',
-        data: investmentStats.byFund.map((item) => ({
-          value: Number(item.profit.toFixed(2)),
-          itemStyle: { color: getChangeColor(item.profit) },
-        })),
-        barWidth: 22,
-        borderRadius: [4, 4, 0, 0],
-      },
-    ],
-  }), [investmentStats.byFund]);
-
   return (
     <main className="app-shell">
       <div className="ambient ambient-a" />
@@ -1792,11 +1735,46 @@ export default function App() {
                   <div className="investment-charts">
                     <div className="terminal-chart">
                       <p className="eyebrow"><WalletCards size={14} /> 市值占比</p>
-                      <EChart option={allocationChartOption} className="modal-chart" />
+                      <div className="allocation-bars">
+                        {investmentStats.byFund
+                          .filter((item) => item.currentValue > 0)
+                          .map((item) => {
+                            const percent = investmentStats.totalValue > 0 ? (item.currentValue / investmentStats.totalValue) * 100 : 0;
+                            return (
+                              <div className="analysis-bar-row" key={item.code}>
+                                <div className="analysis-bar-head">
+                                  <strong>{item.name}</strong>
+                                  <span>{formatPercent(percent, 1)}</span>
+                                </div>
+                                <div className="analysis-track">
+                                  <i style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />
+                                </div>
+                                <small>{formatCurrency(item.currentValue)} · {formatPlainNumber(item.units, 2)} 份</small>
+                              </div>
+                            );
+                          })}
+                      </div>
                     </div>
                     <div className="terminal-chart">
                       <p className="eyebrow"><Activity size={14} /> 基金盈亏</p>
-                      <EChart option={profitChartOption} className="modal-chart" />
+                      <div className="profit-bars">
+                        {investmentStats.byFund.map((item) => {
+                          const maxProfit = Math.max(...investmentStats.byFund.map((fund) => Math.abs(fund.profit)), 1);
+                          const width = Math.max(2, Math.min(100, (Math.abs(item.profit) / maxProfit) * 100));
+                          return (
+                            <div className={`analysis-bar-row ${changeClass(item.profit)}`} key={item.code}>
+                              <div className="analysis-bar-head">
+                                <strong>{item.name}</strong>
+                                <span>{formatCurrency(item.profit)} · {formatPercent(item.returnRate)}</span>
+                              </div>
+                              <div className="analysis-track">
+                                <i style={{ width: `${width}%` }} />
+                              </div>
+                              <small>净投入 {formatCurrency(item.netAmount)} · 当前 {formatCurrency(item.currentValue)}</small>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 ) : (

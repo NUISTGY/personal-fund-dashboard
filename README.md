@@ -93,6 +93,8 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 
 ## 线上静态环境说明
 
+- 本地版本与线上版本采用构建环境隔离：`npm run dev`、`npm run build`、`npm run preview` 保持本地运行逻辑；GitHub Pages 工作流通过 `GITHUB_PAGES=true npm run build` 启用线上专用静态资源路径。
+- 本地版本继续使用 Vite 服务提供的 `./data/investment-records.json` 持久化接口与 `./src/prompt.md` 模板接口。
 - GitHub Pages 仅托管静态文件，不提供服务端文件写入能力。
 - 线上环境的投资记录保存于浏览器本地存储，不同设备之间不会自动同步交易记录。
 - 本地开发与本地预览环境仍可通过 Vite 服务写入 `./data/investment-records.json`。
@@ -134,4 +136,5 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 - 中文乱码防控：入口文件已声明 `UTF-8`，字体栈包含中文字体。
 - 相对路径规范：项目文件与说明文档中的路径均采用相对路径。
 - GitHub 托管能力：已配置 `./.github/workflows/pages.yml` 自动部署流水线，已设置 Vite 相对构建基路径，已补齐线上静态环境的投资分析模板兜底读取。
+- 本地隔离能力：已通过 `GITHUB_PAGES` 环境变量区分线上构建与本地构建，本地开发、构建、预览脚本保持原有行为。
 - 多端访问能力：已支持通过 GitHub Pages 访问同一静态站点；静态托管不具备跨设备交易记录自动同步能力，若需同步可接入云数据库或后端接口。

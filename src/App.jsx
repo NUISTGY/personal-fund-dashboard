@@ -12,6 +12,7 @@ import {
 } from 'echarts/components';
 import * as echarts from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
+import { createClient } from '@supabase/supabase-js';
 import {
   Activity,
   ArrowDownRight,
@@ -23,11 +24,13 @@ import {
   Copy,
   Layers3,
   LineChart,
+  LogOut,
   Plus,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
+  User,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -133,6 +136,11 @@ const INVESTMENT_RECORDS_KEY = 'fund-terminal-investment-records-v1';
 const INVESTMENT_RECORDS_API = '/api/investment-records';
 const PROMPT_TEMPLATE_API = '/api/prompt-template';
 const WATCH_FUNDS_KEY = 'fund-terminal-watch-funds-v1';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 const HOLDING_PERIODS = [
   { year: '', month: '' },
   { year: '2026', month: '3' },
@@ -722,33 +730,91 @@ function normalizeInvestmentRecords(records) {
     ));
 }
 
-function loadInvestmentRecordsBackup() {
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
+}
+
+function isValidPassword(value) {
+  return String(value || '').length >= 6;
+}
+
+function investmentRecordsStorageKey(authUser) {
+  return authUser?.id ? `${INVESTMENT_RECORDS_KEY}:${authUser.id}` : INVESTMENT_RECORDS_KEY;
+}
+
+function mapInvestmentRecordFromSupabase(record) {
+  return {
+    id: record.id,
+    type: record.type,
+    date: record.date,
+    fundCode: record.fund_code,
+    amount: Number(record.amount),
+    nav: Number(record.nav),
+    navDate: record.nav_date || record.date,
+  };
+}
+
+function mapInvestmentRecordToSupabase(record, authUser) {
+  return {
+    id: record.id,
+    user_id: authUser.id,
+    type: record.type,
+    date: record.date,
+    fund_code: record.fundCode,
+    amount: record.amount,
+    nav: record.nav,
+    nav_date: record.navDate || record.date,
+  };
+}
+
+function loadInvestmentRecordsBackup(authUser) {
   try {
-    const raw = localStorage.getItem(INVESTMENT_RECORDS_KEY);
+    const raw = localStorage.getItem(investmentRecordsStorageKey(authUser));
     if (!raw) return [];
     return normalizeInvestmentRecords(JSON.parse(raw));
   } catch {
-    localStorage.removeItem(INVESTMENT_RECORDS_KEY);
+    localStorage.removeItem(investmentRecordsStorageKey(authUser));
     return [];
   }
 }
 
-async function fetchInvestmentRecordsFile() {
-  const response = await fetch(INVESTMENT_RECORDS_API);
-  if (!response.ok) throw new Error('investment records load failed');
-  const payload = await response.json();
-  return normalizeInvestmentRecords(payload.records || payload);
+async function fetchInvestmentRecordsFile(authUser) {
+  if (!authUser) return [];
+  if (!supabase) return loadInvestmentRecordsBackup(authUser);
+
+  const { data, error } = await supabase
+    .from('investment_records')
+    .select('id,type,date,fund_code,amount,nav,nav_date')
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return normalizeInvestmentRecords((data || []).map(mapInvestmentRecordFromSupabase));
 }
 
-async function persistInvestmentRecordsFile(records) {
+async function persistInvestmentRecordsFile(records, authUser) {
   const normalized = normalizeInvestmentRecords(records);
-  localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(normalized));
-  const response = await fetch(INVESTMENT_RECORDS_API, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ records: normalized }),
-  });
-  if (!response.ok) throw new Error('investment records save failed');
+  if (!authUser) return normalized;
+  if (!supabase) {
+    localStorage.setItem(investmentRecordsStorageKey(authUser), JSON.stringify(normalized));
+    return normalized;
+  }
+
+  const { error: deleteError } = await supabase
+    .from('investment_records')
+    .delete()
+    .eq('user_id', authUser.id);
+  if (deleteError) throw deleteError;
+
+  if (normalized.length) {
+    const { error: insertError } = await supabase
+      .from('investment_records')
+      .insert(normalized.map((record) => mapInvestmentRecordToSupabase(record, authUser)));
+    if (insertError) throw insertError;
+  }
   return normalized;
 }
 
@@ -1198,6 +1264,12 @@ function StockHoldingList({ rows, loading }) {
 }
 
 export default function App() {
+  const [authUser, setAuthUser] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
+  const [authForm, setAuthForm] = useState({ email: '', password: '' });
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authReady, setAuthReady] = useState(!supabase);
   const [funds, setFunds] = useState(loadWatchFunds);
   const [selectedCode, setSelectedCode] = useState(() => loadWatchFunds()[0]?.code || DEFAULT_FUNDS[0].code);
   const [range, setRange] = useState(RANGE_OPTIONS[2]);
@@ -1209,7 +1281,7 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState('');
   const [displayMode, setDisplayMode] = useState('nav');
   const [investmentOpen, setInvestmentOpen] = useState(false);
-  const [investmentRecords, setInvestmentRecords] = useState(loadInvestmentRecordsBackup);
+  const [investmentRecords, setInvestmentRecords] = useState([]);
   const [investmentRecordsReady, setInvestmentRecordsReady] = useState(false);
   const [watchQuery, setWatchQuery] = useState('');
   const [addingFund, setAddingFund] = useState(false);
@@ -1337,22 +1409,49 @@ export default function App() {
   }, [funds]);
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthReady(true);
+      return undefined;
+    }
+
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setAuthUser(data.session?.user || null);
+      setAuthReady(true);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user || null);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      subscription?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     let active = true;
 
-    fetchInvestmentRecordsFile()
+    if (!authReady || !authUser) {
+      setInvestmentRecords([]);
+      setInvestmentRecordsReady(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setInvestmentRecordsReady(false);
+    fetchInvestmentRecordsFile(authUser)
       .then(async (fileRecords) => {
         if (!active) return;
-        const backupRecords = loadInvestmentRecordsBackup();
-        if (fileRecords.length || !backupRecords.length) {
-          setInvestmentRecords(fileRecords);
-        } else {
-          setInvestmentRecords(backupRecords);
-          await persistInvestmentRecordsFile(backupRecords);
-        }
+        setInvestmentRecords(fileRecords);
       })
       .catch(() => {
         if (!active) return;
-        setInvestmentRecords(loadInvestmentRecordsBackup());
+        setInvestmentRecords(loadInvestmentRecordsBackup(authUser));
       })
       .finally(() => {
         if (active) setInvestmentRecordsReady(true);
@@ -1361,14 +1460,14 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [authReady, authUser]);
 
   useEffect(() => {
-    if (!investmentRecordsReady) return;
-    persistInvestmentRecordsFile(investmentRecords).catch(() => {
-      localStorage.setItem(INVESTMENT_RECORDS_KEY, JSON.stringify(investmentRecords));
+    if (!authUser || !investmentRecordsReady) return;
+    persistInvestmentRecordsFile(investmentRecords, authUser).catch(() => {
+      localStorage.setItem(investmentRecordsStorageKey(authUser), JSON.stringify(investmentRecords));
     });
-  }, [investmentRecords, investmentRecordsReady]);
+  }, [authUser, investmentRecords, investmentRecordsReady]);
 
   useEffect(() => {
     if (funds.some((fund) => fund.code === selectedCode)) return;
@@ -1413,8 +1512,59 @@ export default function App() {
     };
   }, [selectedCode, stockHoldingMap]);
 
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+    const email = normalizeEmail(authForm.email);
+    const password = authForm.password;
+
+    setAuthError('');
+    if (!supabase) {
+      setAuthError('Supabase 环境变量未配置，无法启用跨设备云端账本。');
+      return;
+    }
+    if (!isValidEmail(email)) {
+      setAuthError('请输入有效邮箱地址。');
+      return;
+    }
+    if (!isValidPassword(password)) {
+      setAuthError('密码长度至少 6 位。');
+      return;
+    }
+
+    setAuthBusy(true);
+    try {
+      if (authMode === 'register') {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        if (!data.session) {
+          setAuthError('注册成功。若 Supabase 开启邮箱验证，需完成邮箱验证后再登录。');
+          return;
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+
+      setAuthForm({ email: '', password: '' });
+      setInvestmentOpen(false);
+    } catch (error) {
+      setAuthError(error?.message || '账户操作失败。');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    if (supabase) await supabase.auth.signOut();
+    setAuthUser(null);
+    setInvestmentRecords([]);
+    setInvestmentRecordsReady(false);
+    setInvestmentOpen(false);
+  };
+
   const addInvestmentRecord = (event) => {
     event.preventDefault();
+    if (!authUser) return;
     const amount = Number(investmentForm.amount);
     const nav = Number(investmentForm.nav || formNav.nav);
     if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(nav) || nav <= 0) return;
@@ -1589,8 +1739,22 @@ export default function App() {
         </div>
         <div className="hero-actions">
           <button className="icon-button" type="button" onClick={() => setInvestmentOpen(true)} title="投资记录" aria-label="投资记录">
-            <ClipboardList size={19} />
+            {authUser ? <ClipboardList size={19} /> : <User size={19} />}
           </button>
+          {authUser ? (
+            <div className="status-pill account-pill">
+              <User size={16} />
+              <span>{authUser.email}</span>
+              <button type="button" onClick={logout} title="退出登录" aria-label="退出登录">
+                <LogOut size={14} />
+              </button>
+            </div>
+          ) : (
+            <button className="status-pill account-login" type="button" onClick={() => setInvestmentOpen(true)}>
+              <User size={16} />
+              <span>登录账本</span>
+            </button>
+          )}
           <button className="icon-button" type="button" onClick={loadData} title="刷新数据" aria-label="刷新数据">
             <RefreshCw size={19} className={loading ? 'spin' : ''} />
           </button>
@@ -1795,27 +1959,84 @@ export default function App() {
           <section className="investment-modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="investment-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <p className="eyebrow"><ClipboardList size={15} /> 投资记录</p>
-                <h2 id="investment-title">个人投资统计</h2>
+                <p className="eyebrow">{authUser ? <ClipboardList size={15} /> : <User size={15} />} {authUser ? '投资记录' : '账户登录'}</p>
+                <h2 id="investment-title">{authUser ? '个人投资统计' : '多用户账本入口'}</h2>
               </div>
               <div className="modal-actions">
-                <button
-                  className={`copy-brief-button ${copyStatus === '已复制' ? 'copied' : ''}`}
-                  type="button"
-                  onClick={copyInvestmentBrief}
-                  title="复制投资分析输入"
-                  aria-label="复制投资分析输入"
-                >
-                  {copyStatus === '已复制' ? <Check size={17} /> : <Copy size={17} />}
-                  <span>{copyStatus || '复制分析包'}</span>
-                </button>
+                {authUser && (
+                  <button
+                    className={`copy-brief-button ${copyStatus === '已复制' ? 'copied' : ''}`}
+                    type="button"
+                    onClick={copyInvestmentBrief}
+                    title="复制投资分析输入"
+                    aria-label="复制投资分析输入"
+                  >
+                    {copyStatus === '已复制' ? <Check size={17} /> : <Copy size={17} />}
+                    <span>{copyStatus || '复制分析包'}</span>
+                  </button>
+                )}
                 <button className="icon-button" type="button" onClick={() => setInvestmentOpen(false)} title="关闭" aria-label="关闭">
                   <X size={18} />
                 </button>
               </div>
             </div>
 
-            <div className="investment-layout">
+            {!authUser ? (
+              <div className="auth-panel">
+                <form className="auth-card" onSubmit={handleAuthSubmit}>
+                  <div className="type-switch" role="group" aria-label="账户操作">
+                    <button
+                      type="button"
+                      className={authMode === 'login' ? 'selected' : ''}
+                      onClick={() => {
+                        setAuthMode('login');
+                        setAuthError('');
+                      }}
+                    >
+                      登录
+                    </button>
+                    <button
+                      type="button"
+                      className={authMode === 'register' ? 'selected' : ''}
+                      onClick={() => {
+                        setAuthMode('register');
+                        setAuthError('');
+                      }}
+                    >
+                      注册
+                    </button>
+                  </div>
+                  <label>
+                    <span>邮箱</span>
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      placeholder="name@example.com"
+                      value={authForm.email}
+                      onChange={(event) => setAuthForm((current) => ({ ...current, email: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    <span>密码</span>
+                    <input
+                      type="password"
+                      autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                      placeholder="至少 6 位"
+                      value={authForm.password}
+                      onChange={(event) => setAuthForm((current) => ({ ...current, password: event.target.value }))}
+                    />
+                  </label>
+                  {authError && <strong className="auth-error">{authError}</strong>}
+                  {!supabase && <strong className="auth-error">Supabase 尚未配置，线上云端账本不可用。</strong>}
+                  <button className="command-button" type="submit" disabled={authBusy || !supabase}>
+                    <User size={17} />
+                    <span>{authMode === 'register' ? '创建账本账户' : '进入个人账本'}</span>
+                  </button>
+                  <small>该线上静态版本使用 Supabase Auth 与云端数据库，不同邮箱账户的投资记录通过行级安全策略隔离。</small>
+                </form>
+              </div>
+            ) : (
+              <div className="investment-layout">
               <section className="record-panel">
                 <form className="record-form" onSubmit={addInvestmentRecord}>
                   <div className="type-switch" role="group" aria-label="记录类型">
@@ -2010,7 +2231,8 @@ export default function App() {
                   </div>
                 )}
               </section>
-            </div>
+              </div>
+            )}
           </section>
         </div>
       )}

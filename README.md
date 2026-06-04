@@ -4,7 +4,7 @@
 
 本项目为基金组合看板单页应用，内置候选基金代码并支持自选列表增删，提供分钟级基金估值读取、历史净值曲线、关键指标、基金底层股票持仓、个人投资记录与收益统计分析等功能。
 
-界面采用简约字符风、CRT 扫描线、红绿色调、终端风与霓虹效果。图表区域使用交互式折线图呈现基金走势，基金观察列表与趋势图按分钟更新；持仓区域随当前选中基金展示底层股票名称、代码、实时股价、占净值比例、持仓市值、舆情判断与行情涨幅，个股行情按秒独立更新。投资记录弹层支持录入买入或卖出记录，并按当前净值计算持仓市值、浮动盈亏和收益率。数据接口不可用时，页面自动使用兜底数据维持展示完整性。
+界面采用简约字符风、CRT 扫描线、红绿色调、终端风与霓虹效果。图表区域使用交互式折线图呈现基金走势，基金观察列表与趋势图按分钟更新；持仓区域随当前选中基金展示底层股票名称、代码、实时股价、占净值比例、持仓市值、舆情判断与行情涨幅，个股行情按秒独立更新。投资记录弹层支持简单账户注册登录、按账户隔离投资记录、录入买入或卖出记录，并按当前净值计算持仓市值、浮动盈亏和收益率。数据接口不可用时，页面自动使用兜底数据维持展示完整性。
 
 ## 环境依赖清单
 
@@ -12,11 +12,13 @@
 - npm 10 或更高版本
 - 浏览器需支持现代 CSS、ES Module、Canvas
 - 网络环境需允许访问基金公开数据接口
+- Supabase 免费项目，用于邮箱密码认证、云端账本数据表与行级安全策略
 
 ## 项目目录结构说明
 
 ```text
 ./
+├── .env.example
 ├── index.html
 ├── package.json
 ├── README.md
@@ -25,6 +27,8 @@
 │       └── pages.yml
 ├── data/
 │   └── investment-records.json
+├── supabase/
+│   └── schema.sql
 └── src/
     ├── App.jsx
     ├── main.jsx
@@ -32,10 +36,12 @@
     └── styles.css
 ```
 
+- `./.env.example`：Supabase 环境变量示例文件。
 - `./data/investment-records.json`：个人投资交易记录持久化文件。
 - `./.github/workflows/pages.yml`：GitHub Pages 自动构建与发布流水线配置。
 - `./index.html`：页面入口文件。
 - `./package.json`：项目脚本与依赖配置。
+- `./supabase/schema.sql`：Supabase 投资记录表、索引与 RLS 策略初始化脚本。
 - `./src/main.jsx`：React 应用挂载入口。
 - `./src/App.jsx`：基金配置、数据读取、看板交互、图表渲染、持仓逻辑与投资记录统计逻辑。
 - `./src/prompt.md`：投资分析包复制模板，复制时由本地服务实时读取并填充交易相关数据。
@@ -69,37 +75,60 @@ npm run preview
 
 ## GitHub 托管部署步骤
 
-项目已配置 GitHub Pages 自动部署流水线，代码推送到 `main` 分支后会自动执行安装依赖、构建静态文件、发布页面等流程。
+项目已配置 GitHub Pages 自动部署流水线，线上多用户账本版本推送到 `codex/online-user-auth` 分支后会自动执行安装依赖、构建静态文件、发布页面等流程。
 
-1. 提交并推送代码：
+1. 创建 Supabase 免费项目。
+
+2. 在 Supabase SQL Editor 执行 `./supabase/schema.sql`。
+
+3. 在 Supabase 项目设置中读取 Project URL 与 anon public key。
+
+4. 在 GitHub 仓库 `Settings` -> `Secrets and variables` -> `Actions` 中新增以下仓库密钥：
+
+```text
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+```
+
+5. 提交并推送代码：
 
 ```bash
 git add .
-git commit -m "Configure GitHub Pages deployment"
-git push origin main
+git commit -m "Update online user ledger version"
+git push origin codex/online-user-auth
 ```
 
-2. 在 GitHub 仓库页面进入 `Settings` -> `Pages`。
+6. 在 GitHub 仓库页面进入 `Settings` -> `Pages`。
 
-3. 将部署来源设置为 `GitHub Actions`。
+7. 将部署来源设置为 `GitHub Actions`。
 
-4. 等待 `Actions` 中的 `Deploy GitHub Pages` 工作流执行完成。
+8. 等待 `Actions` 中的 `Deploy GitHub Pages` 工作流执行完成。
 
-5. 线上访问地址：
+9. 线上访问地址：
 
 ```text
 https://NUISTGY.github.io/personal-fund-dashboard/
 ```
 
+## 免费动态方案选型
+
+- Supabase：免费层包含 Auth、Postgres 数据库、自动 API、RLS、基础流量与存储额度，适合当前静态站点直接接入云端账本。
+- Firebase：免费层包含 Authentication 与 Firestore，可实现同类能力，但当前项目数据结构偏关系型，RLS 与 SQL 维护成本更低。
+- Cloudflare Workers + D1：免费层可支撑动态 API 与 SQLite 数据库，但需自行实现认证、接口、权限与部署链路，改造量高于 Supabase。
+- Neon：免费层提供 Postgres 数据库，但不直接提供浏览器侧认证与 RLS API 封装，仍需额外后端或认证服务。
+
+综合结论：当前版本采用 Supabase。该方案保留 GitHub Pages 静态托管，同时通过 Supabase Auth 与 Postgres 实现跨设备登录、云端持久化与多用户数据隔离。
+
 ## 线上静态环境说明
 
 - 本地版本与线上版本采用构建环境隔离：`npm run dev`、`npm run build`、`npm run preview` 保持本地运行逻辑；GitHub Pages 工作流通过 `GITHUB_PAGES=true npm run build` 启用线上专用静态资源路径。
 - 本地版本继续使用 Vite 服务提供的 `./data/investment-records.json` 持久化接口与 `./src/prompt.md` 模板接口。
-- GitHub Pages 仅托管静态文件，不提供服务端文件写入能力。
-- 线上环境的投资记录保存于浏览器本地存储，不同设备之间不会自动同步交易记录。
-- 本地开发与本地预览环境仍可通过 Vite 服务写入 `./data/investment-records.json`。
+- GitHub Pages 仅托管静态文件，不提供服务端文件写入能力；动态账户与账本数据由 Supabase 提供。
+- 线上环境支持邮箱密码注册登录，账号信息由 Supabase Auth 管理，投资记录保存于 Supabase Postgres。
+- 线上环境可供不同使用者在各自设备中独立登录并管理账本；同一账号在不同设备登录后可读取同一份云端账本。
+- 投资记录表启用 RLS，所有读写策略均按 `auth.uid()` 与 `user_id` 匹配，阻止不同账号互相读取或修改投资记录。
 - 复制投资分析输入包时，线上环境会使用构建包内置的 `./src/prompt.md` 模板。
-- 若需实现不同设备共享同一份投资记录，可接入 Supabase、Firebase、Serverless API 或自建后端接口。
+- 若 Supabase 项目开启邮箱验证，注册后需完成邮箱验证再登录；若用于熟人小范围测试，可在 Supabase Auth 配置中关闭邮箱确认。
 
 ## 功能使用方法
 
@@ -108,8 +137,9 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 - 图表模式按钮支持切换 `净值` 与 `收益` 展示方式。
 - 持仓情况用于查看当前选中基金的底层股票持仓、实时股价、占净值比例、持仓市值、舆情判断与行情涨幅，个股价格按秒独立刷新。
 - 基金数据表用于查看全部基金的净值、估算涨跌、区间收益、最大回撤、风险等级与分类。
-- 顶部投资记录按钮用于打开弹层，录入买入或卖出日期、基金、金额与成交净值；系统自动匹配可用净值，也支持手动覆盖净值。
-- 投资记录新增、卖出、删除操作在本地服务环境会实时写入 `./data/investment-records.json`，线上静态环境会写入浏览器本地存储。
+- 顶部投资记录按钮用于打开弹层；未登录时显示账户登录或注册界面，登录后显示个人投资记录。
+- 投资记录表单用于录入买入或卖出日期、基金、金额与成交净值；系统自动匹配可用净值，也支持手动覆盖净值。
+- 投资记录新增、卖出、删除操作会写入 Supabase 当前登录账号对应的数据行。
 - 投资记录弹层右上角复制按钮用于生成 AI 分析输入包，内容以 `./src/prompt.md` 为模板并实时填充统计汇总、当前持仓、当前持仓相关交易记录、当前持仓基金行情快照与结构化 JSON 原始数据。
 - 投资记录弹层统计净投入、当前市值、浮动盈亏、收益率，并展示市值占比分段条、日期盈亏网格与累计盈亏日志；点击日期可查看当日各持仓基金盈亏明细。
 - 日期盈亏按已持有份额与相邻净值日涨跌计算，买入当天不计入当日净值涨跌收益，买入后的下一个净值日开始计入日盈亏。
@@ -120,7 +150,8 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 - 历史净值读取自基金公开历史净值脚本接口。
 - 页面不展示前端估算的 24 小时日内净值曲线，避免将模拟数据误认为基金披露净值。
 - 基金底层股票持仓读取自基金公开持仓披露接口，股票实时股价与行情涨幅优先读取东方财富公开行情接口；台湾、韩国、日本、香港与美国市场股票在主接口缺失时尝试使用 Yahoo Finance 图表接口兜底；当行情接口受限时，价格与涨幅字段显示为空值标记。
-- 投资记录在本地服务环境保存于 `./data/investment-records.json`，该文件由本地服务自动创建且不纳入 Git 版本控制；线上静态环境保存于浏览器本地存储。统计结果按记录类型、成交净值、持有份额与当前基金净值计算。
+- 投资记录保存于 Supabase `investment_records` 表；原 `./data/investment-records.json` 仍保留为本地旧数据文件，不参与线上多用户隔离。统计结果按记录类型、成交净值、持有份额与当前基金净值计算。
+- 账户密码由 Supabase Auth 管理，不在前端代码或浏览器本地存储中自行保存密码哈希。
 - 投资记录收益金额采用两位小数展示，避免小额收益因整数四舍五入产生展示偏差。
 - 自选基金列表保存于浏览器本地存储，添加或删除后会同步影响观察列表、主图、持仓情况、基金数据表与投资记录基金选择项。
 - 投资分析输入包由当前页面状态即时生成，复制内容采用 Markdown 表格与 JSON 双格式；行情快照和结构化原始数据仅包含当前持仓基金，便于后续粘贴到 AI 工具进行投资计划分析。
@@ -133,6 +164,7 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 - 看板能力：已实现观察列表、指标卡、主图、底层持仓情况、投资记录弹层与明细表。
 - 持仓能力：已实现当前选中基金的底层股票名称、代码、实时股价、占净值比例、持仓市值、舆情判断与行情涨幅展示。
 - 投资记录能力：已实现买入记录、卖出记录、成交净值手动设置、本地保存、当前市值估算、浮动盈亏、收益率、市值占比分段条、日期盈亏网格、累计盈亏日志与一键复制 AI 分析输入包；日期盈亏仅统计所选日期前已形成的实际持仓。
+- 多用户账本能力：已实现 Supabase 邮箱密码注册登录、会话保持、退出登录、按账户隔离投资记录、跨设备云端持久化。
 - 收益计算口径：已实现买入当天日盈亏为零，下一净值日开始按持有份额计算日盈亏；收益金额已采用两位小数展示。
 - 视觉风格：已采用简约字符风、CRT 扫描线、红绿色调、终端风与霓虹效果。
 - 交互能力：已实现基金搜索、基金加入自选、基金删除、基金切换、周期切换、图表模式切换、刷新与本地持仓读取。
@@ -140,4 +172,4 @@ https://NUISTGY.github.io/personal-fund-dashboard/
 - 相对路径规范：项目文件与说明文档中的路径均采用相对路径。
 - GitHub 托管能力：已配置 `./.github/workflows/pages.yml` 自动部署流水线，已设置 Vite 相对构建基路径，已补齐线上静态环境的投资分析模板兜底读取。
 - 本地隔离能力：已通过 `GITHUB_PAGES` 环境变量区分线上构建与本地构建，本地开发、构建、预览脚本保持原有行为。
-- 多端访问能力：已支持通过 GitHub Pages 访问同一静态站点；静态托管不具备跨设备交易记录自动同步能力，若需同步可接入云数据库或后端接口。
+- 多端访问能力：已支持通过 GitHub Pages 访问同一静态站点，并通过 Supabase 支撑同一账号跨设备读取同一份投资记录。

@@ -1309,6 +1309,21 @@ tbody tr:hover {
   font-size: 15px;
 }
 
+.panel-inline-title strong.up {
+  color: #ff4b63;
+  text-shadow: 0 0 12px rgba(255, 49, 88, 0.34);
+}
+
+.panel-inline-title strong.down {
+  color: #24ff72;
+  text-shadow: 0 0 12px rgba(36, 255, 114, 0.34);
+}
+
+.panel-inline-title strong.flat {
+  color: #86dca6;
+  text-shadow: none;
+}
+
 .daily-profit-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));

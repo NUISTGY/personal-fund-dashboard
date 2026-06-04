@@ -538,6 +538,10 @@ function formatCurrency(value, digits = 0) {
   }).format(number);
 }
 
+function formatProfitCurrency(value) {
+  return formatCurrency(value, 2);
+}
+
 function formatLocalDate(date = new Date()) {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, '0');
@@ -876,7 +880,7 @@ function buildDailyProfitGrid(records, funds, historyMap) {
           return sum + direction * (record.amount / record.nav);
         }, 0);
       const settledUnits = current ? records
-        .filter((record) => record.fundCode === code && record.date <= current.date)
+        .filter((record) => record.fundCode === code && record.date < current.date)
         .reduce((sum, record) => {
           const direction = record.type === 'sell' ? -1 : 1;
           return sum + direction * (record.amount / record.nav);
@@ -1895,7 +1899,7 @@ export default function App() {
                       </div>
                       <div className="record-numbers">
                         <strong>{record.type === 'sell' ? '-' : '+'}{formatCurrency(record.amount)}</strong>
-                        <small className={changeClass(record.profit)}>{formatCurrency(record.profit)} · {formatPercent(record.returnRate)}</small>
+                        <small className={changeClass(record.profit)}>{formatProfitCurrency(record.profit)} · {formatPercent(record.returnRate)}</small>
                       </div>
                       <button type="button" className="ghost-button" onClick={() => removeInvestmentRecord(record.id)} title="删除记录" aria-label="删除记录">
                         <Trash2 size={15} />
@@ -1914,7 +1918,7 @@ export default function App() {
                 <div className="analysis-metrics investment-summary-grid">
                   <MetricMini label="净投入" value={formatCurrency(investmentStats.totalAmount)} />
                   <MetricMini label="当前市值" value={formatCurrency(investmentStats.totalValue)} />
-                  <MetricMini label="累计盈亏" value={formatCurrency(investmentStats.totalProfit)} tone={investmentStats.totalProfit >= 0 ? 'up' : 'down'} />
+                  <MetricMini label="累计盈亏" value={formatProfitCurrency(investmentStats.totalProfit)} tone={investmentStats.totalProfit >= 0 ? 'up' : 'down'} />
                   <MetricMini label="收益率" value={formatPercent(investmentStats.totalReturn)} tone={investmentStats.totalReturn >= 0 ? 'up' : 'down'} />
                 </div>
 
@@ -1953,7 +1957,9 @@ export default function App() {
                     <div className="daily-grid-panel">
                       <div className="panel-inline-title">
                         <p className="eyebrow"><Activity size={14} /> 日期盈亏</p>
-                        <strong>{selectedDailyProfit?.date || '--'} · {formatCurrency(selectedDailyProfit?.totalProfit || 0)}</strong>
+                        <strong className={changeClass(selectedDailyProfit?.totalProfit || 0)}>
+                          {selectedDailyProfit?.date || '--'} · {formatProfitCurrency(selectedDailyProfit?.totalProfit || 0)}
+                        </strong>
                       </div>
                       <div className="daily-profit-grid">
                         {dailyProfitGrid.map((day) => (
@@ -1964,7 +1970,7 @@ export default function App() {
                             onClick={() => setSelectedDailyDate(day.date)}
                           >
                             <span>{day.date.slice(5)}</span>
-                            <strong>{formatCurrency(day.totalProfit)}</strong>
+                            <strong>{formatProfitCurrency(day.totalProfit)}</strong>
                           </button>
                         ))}
                       </div>
@@ -1973,7 +1979,7 @@ export default function App() {
                           <div className={`daily-detail-row ${changeClass(item.dailyProfit)}`} key={item.code}>
                             <strong>{item.name}</strong>
                             <small>{item.code} · {item.nav ? `净值 ${item.nav.toFixed(4)}` : '无当日净值'}</small>
-                            <em>{formatCurrency(item.dailyProfit)}</em>
+                            <em>{formatProfitCurrency(item.dailyProfit)}</em>
                             <span>{formatPercent(item.dailyChange)}</span>
                           </div>
                         ))}
@@ -1988,7 +1994,7 @@ export default function App() {
                             <span>{'>'}</span>
                             <strong>{item.name}</strong>
                             <code>{item.code}</code>
-                            <em>{formatCurrency(item.profit)}</em>
+                            <em>{formatProfitCurrency(item.profit)}</em>
                             <small>{formatPercent(item.returnRate)}</small>
                             <small>净投入 {formatCurrency(item.netAmount)}</small>
                             <small>当前 {formatCurrency(item.currentValue)}</small>

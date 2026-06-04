@@ -31,6 +31,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
+import promptTemplateMarkdown from './prompt.md?raw';
 
 const DEFAULT_FUNDS = [
   {
@@ -1011,9 +1012,13 @@ function renderPromptTemplate(template, context) {
 }
 
 async function loadPromptTemplate() {
-  const response = await fetch(`${PROMPT_TEMPLATE_API}?t=${Date.now()}`);
-  if (!response.ok) throw new Error('prompt template load failed');
-  return response.text();
+  try {
+    const response = await fetch(`${PROMPT_TEMPLATE_API}?t=${Date.now()}`);
+    if (!response.ok) throw new Error('prompt template load failed');
+    return response.text();
+  } catch {
+    return promptTemplateMarkdown;
+  }
 }
 
 function buildFallbackInvestmentCopyText(context) {

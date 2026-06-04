@@ -189,6 +189,7 @@ function yahooQuoteJsonpPlugin() {
 }
 
 export default defineConfig({
+  base: process.env.GITHUB_PAGES === 'true' ? './' : '/',
   plugins: [react(), investmentRecordsPlugin(), promptTemplatePlugin(), yahooQuoteJsonpPlugin()],
   server: {
     proxy: {

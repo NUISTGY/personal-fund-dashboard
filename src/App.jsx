@@ -1273,9 +1273,16 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
     dailySeries = asset.key === 'nasdaq'
       ? await fetchSinaNasdaqDailyKline(rangeOption.historyLimit || 520)
       : await fetchEastmoneyDailyKline(asset, rangeOption.historyLimit || 520);
+    sourceLabel = asset.key === 'nasdaq' ? '新浪' : '东方财富';
     if (asset.key === 'nasdaq' && dailySeries.length) writeNdxDailyKlineCache(dailySeries);
   } catch {
-    dailySeries = asset.key === 'nasdaq' ? readNdxDailyKlineCache(rangeOption.historyLimit || 520) : [];
+    try {
+      dailySeries = await fetchEastmoneyDailyKline(asset, rangeOption.historyLimit || 520);
+      sourceLabel = '东方财富';
+      if (asset.key === 'nasdaq' && dailySeries.length) writeNdxDailyKlineCache(dailySeries);
+    } catch {
+      dailySeries = asset.key === 'nasdaq' ? readNdxDailyKlineCache(rangeOption.historyLimit || 520) : [];
+    }
   }
 
   if (rangeOption.key === 'day') {
@@ -1283,11 +1290,15 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
       series = asset.key === 'nasdaq' ? await fetchSinaNasdaqTrend() : await fetchEastmoneyTrend(asset);
       sourceLabel = asset.key === 'nasdaq' ? '新浪' : '东方财富';
     } catch {
-      series = [];
+      try {
+        series = await fetchEastmoneyTrend(asset);
+        sourceLabel = '东方财富';
+      } catch {
+        series = [];
+      }
     }
   } else if (dailySeries.length) {
     series = dailySeries.slice(-(rangeOption.visiblePoints || dailySeries.length));
-    sourceLabel = asset.key === 'nasdaq' ? '新浪' : '东方财富';
   }
 
   if (!series.length) {
@@ -1394,7 +1405,12 @@ async function fetchNightMarketSnapshot({ includeTrend = false, includeVolatilit
 
     try {
       if (asset.key === 'nasdaq') {
-        const quote = await fetchSinaNasdaqQuote(asset);
+        let quote = null;
+        try {
+          quote = await fetchSinaNasdaqQuote(asset);
+        } catch {
+          quote = await fetchEastmoneyQuote(asset);
+        }
         const trendPayload = includeTrend ? await fetchNasdaqTrendSeries(asset, trendRangeKey, quote) : {};
         if (quote) return [asset.key, { ...quote, ...trendPayload }];
       }

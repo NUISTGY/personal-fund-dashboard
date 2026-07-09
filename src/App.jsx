@@ -134,6 +134,20 @@ const NIGHT_MARKET_SIGNALS = [
   { key: 'vxn', symbol: '^VXN', name: 'VXN', role: '纳指波动率指数' },
 ];
 
+const RSI_SIGNAL_CONFIG = {
+  key: 'rsi14',
+  symbol: 'RSI',
+  name: 'RSI(14)',
+  role: '纳指相对强弱指数',
+  min: 0,
+  max: 100,
+  scaleMarks: [
+    { value: 30, label: '30' },
+    { value: 50, label: '50' },
+    { value: 70, label: '70' },
+  ],
+};
+
 const NDX_TREND_RANGE_OPTIONS = [
   { key: 'day', label: '日', rangeLabel: '最近交易时段', intervalLabel: '1分钟级行情', visiblePoints: 391, historyLimit: 520 },
   { key: 'week', label: '周', rangeLabel: '近一周', intervalLabel: '日线行情', visiblePoints: 6, historyLimit: 260 },
@@ -164,6 +178,11 @@ const DCA_STRATEGY_PARAMS = {
 const VOLATILITY_FALLBACK_SEED = {
   vxn: { ...NIGHT_MARKET_SIGNALS[2], price: 26.31, previousClose: 28.56, change: -7.8782, timestamp: new Date(2026, 5, 18, 16, 0, 0).getTime(), marketSession: '最近收盘', sourceLabel: 'Cboe' },
 };
+
+function isNativeDashboardRuntime() {
+  return Capacitor.isNativePlatform()
+    || (typeof document !== 'undefined' && document.documentElement.classList.contains('capacitor-native'));
+}
 
 const INVESTMENT_COLORS = ['#ff4b63', '#24ff72', '#7affaa', '#ff3158', '#86dca6', '#d8ffe8', '#0eb85b'];
 const MAX_HISTORY_DAYS = Math.max(...RANGE_OPTIONS.map((item) => item.days || 0));
@@ -556,7 +575,70 @@ function requestSinaKlineScript(kind, symbol, timeoutMs = 10000) {
   });
 }
 
+function extractSinaJsonpRows(rawText) {
+  const text = String(rawText || '').trim();
+  const match = text.match(/=\s*\(([\s\S]*?)\)\s*;?\s*$/);
+  if (!match) return [];
+  try {
+    const rows = JSON.parse(match[1]);
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+function extractSinaQuoteFields(rawText) {
+  const text = String(rawText || '');
+  const match = text.match(/=\s*"([\s\S]*?)"\s*;?\s*$/);
+  return match ? match[1].split(',') : [];
+}
+
+async function requestSinaKlineNative(kind, symbol, timeoutMs = 12000) {
+  const safeSymbol = cleanSinaSymbol(symbol);
+  if (!safeSymbol) throw new Error('sina native kline bad symbol');
+  const api = kind === 'min' ? 'US_MinKService.getMinK' : 'US_MinKService.getDailyK';
+  const suffix = kind === 'min' ? '&type=1' : '';
+  const callbackName = `native_sina_${kind}_${Date.now()}`;
+  const url = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20${callbackName}=/${api}?symbol=${encodeURIComponent(safeSymbol)}${suffix}&_=${Date.now()}`;
+  const response = await CapacitorHttp.get({
+    url,
+    headers: {
+      Accept: '*/*',
+      Referer: 'https://finance.sina.com.cn/',
+      'User-Agent': 'Mozilla/5.0',
+    },
+    connectTimeout: timeoutMs,
+    readTimeout: timeoutMs,
+  });
+  const rows = extractSinaJsonpRows(typeof response.data === 'string' ? response.data : JSON.stringify(response.data || ''));
+  if (!rows.length) throw new Error(`sina native ${kind} empty`);
+  return { rows };
+}
+
+async function requestSinaQuoteNative(symbol, timeoutMs = 8000) {
+  const safeSymbol = cleanSinaSymbol(symbol);
+  if (!safeSymbol) throw new Error('sina native quote bad symbol');
+  const response = await CapacitorHttp.get({
+    url: `https://hq.sinajs.cn/list=${encodeURIComponent(safeSymbol)}&_=${Date.now()}`,
+    headers: {
+      Accept: '*/*',
+      Referer: 'https://finance.sina.com.cn/',
+      'User-Agent': 'Mozilla/5.0',
+    },
+    connectTimeout: timeoutMs,
+    readTimeout: timeoutMs,
+  });
+  const fields = extractSinaQuoteFields(typeof response.data === 'string' ? response.data : JSON.stringify(response.data || ''));
+  if (!fields.length) throw new Error('sina native quote empty');
+  return { fields };
+}
+
 async function requestSinaUs(kind, params = {}) {
+  if (Capacitor.isNativePlatform()) {
+    if (kind === 'quote') return requestSinaQuoteNative(params.symbol);
+    if (kind === 'min' || kind === 'daily') return requestSinaKlineNative(kind, params.symbol);
+  }
+
   const query = new URLSearchParams({ ...params, kind, _: `${Date.now()}` });
   try {
     const response = await fetch(`/api/sina-us?${query.toString()}`, {
@@ -1185,12 +1267,102 @@ function buildDcaPlanAtIndex(rows, endIndex) {
   };
 }
 
-function isLikelyNonTradingDay(latestDateText, now = new Date()) {
+function getChinaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+function isChinaFundTradingDay(date = new Date()) {
+  const values = getChinaDateParts(date);
+  return !['Sat', 'Sun'].includes(values.weekday);
+}
+
+function addUtcDays(dateText, offset) {
+  const timestamp = Date.parse(`${dateText}T12:00:00Z`);
+  if (!Number.isFinite(timestamp)) return '';
+  const date = new Date(timestamp);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return toDateTextUtc(date);
+}
+
+function isUsTradingDateText(dateText) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateText))) return false;
+  const weekday = new Date(`${dateText}T12:00:00Z`).getUTCDay();
+  return weekday !== 0 && weekday !== 6 && !isUsMarketHoliday(dateText);
+}
+
+function previousUsTradingDateText(dateText) {
+  let cursor = dateText;
+  for (let index = 0; index < 14; index += 1) {
+    cursor = addUtcDays(cursor, -1);
+    if (isUsTradingDateText(cursor)) return cursor;
+  }
+  return '';
+}
+
+function getExpectedLatestUsTradingDateText(now = new Date()) {
   const marketInfo = getNewYorkCalendarInfo(now);
-  if (['Sat', 'Sun'].includes(marketInfo.weekday)) return true;
-  if (isUsMarketHoliday(marketInfo.dateText)) return true;
-  const gap = latestDateText && marketInfo.dateText ? diffCalendarDays(latestDateText, marketInfo.dateText) : 0;
-  return gap > 3;
+  let candidate = marketInfo.dateText;
+  if (!isUsTradingDateText(candidate) || marketInfo.minutes < 16 * 60 + 5) {
+    candidate = previousUsTradingDateText(candidate);
+  }
+  return candidate;
+}
+
+function nextChinaFundCutoffAfter(timestamp) {
+  const start = new Date(Number(timestamp));
+  if (!Number.isFinite(start.getTime())) return null;
+
+  for (let offset = 0; offset < 14; offset += 1) {
+    const probe = new Date(start.getTime() + offset * 24 * 60 * 60 * 1000);
+    const values = getChinaDateParts(probe);
+    const cutoff = new Date(`${values.year}-${values.month}-${values.day}T15:00:00+08:00`);
+    if (cutoff.getTime() <= start.getTime()) continue;
+    if (isChinaFundTradingDay(cutoff)) return cutoff.getTime();
+  }
+
+  return null;
+}
+
+function getChinaDcaOperationState(latestDataTimestamp, latestUsDateText) {
+  return {
+    label: '',
+    isInvestWindow: true,
+    validUntil: null,
+    expectedLatestUsDateText: latestUsDateText || '',
+  };
+}
+
+function mergeCompletedIntradayClose(dailySeries, intradaySeries) {
+  const byDate = new Map();
+  normalizeDcaDailyRows(dailySeries).forEach((row) => {
+    byDate.set(row[2], row);
+  });
+
+  const latestIntraday = normalizeMarketSeries(intradaySeries).at(-1);
+  const latestTimestamp = Number(latestIntraday?.[0]);
+  const latestPrice = Number(latestIntraday?.[1]);
+  const latestDateText = formatNewYorkDateText(latestTimestamp);
+  if (Number.isFinite(latestTimestamp)
+    && isValidMarketNumber(latestPrice)
+    && latestDateText
+    && isCompletedUsDailyBar(latestDateText)) {
+    const previous = byDate.get(latestDateText);
+    if (!previous || latestTimestamp >= Number(previous[0])) {
+      byDate.set(latestDateText, [latestTimestamp, latestPrice, latestDateText]);
+    }
+  }
+
+  return [...byDate.values()].sort((a, b) => a[0] - b[0]);
 }
 
 function buildDcaPlanFromDailySeries(dailySeries, sourceLabel = '接口') {
@@ -1216,15 +1388,87 @@ function buildDcaPlanFromDailySeries(dailySeries, sourceLabel = '接口') {
   const deltaInvest = Number.isFinite(previousDailyInvest) && Number.isFinite(dailyInvest)
     ? dailyInvest - previousDailyInvest
     : null;
-  const isClosed = isLikelyNonTradingDay(latestPlan.dateText);
-
   return {
     ...latestPlan,
-    status: isClosed ? 'closed' : 'ready',
+    status: 'ready',
+    operationState: getChinaDcaOperationState(latestPlan.timestamp, latestPlan.dateText),
     sourceLabel,
     previousDateText: previousPlan?.dateText || '--',
     previousDailyInvest: Number.isFinite(previousDailyInvest) ? previousDailyInvest : null,
     deltaInvest,
+  };
+}
+
+function buildRsiRowsWithLatest(dailySeries, latestSeries) {
+  const byDate = new Map();
+  normalizeDcaDailyRows(dailySeries).forEach((row) => {
+    byDate.set(row[2], row);
+  });
+
+  const latestPoint = normalizeMarketSeries(latestSeries).at(-1);
+  const latestTimestamp = Number(latestPoint?.[0]);
+  const latestPrice = Number(latestPoint?.[1]);
+  const latestDateText = formatNewYorkDateText(latestTimestamp);
+  if (Number.isFinite(latestTimestamp) && isValidMarketNumber(latestPrice) && latestDateText) {
+    const previous = byDate.get(latestDateText);
+    if (!previous || latestTimestamp >= Number(previous[0])) {
+      byDate.set(latestDateText, [latestTimestamp, latestPrice, latestDateText]);
+    }
+  }
+
+  return [...byDate.values()].sort((a, b) => a[0] - b[0]);
+}
+
+function calculateRsi14(rows, period = 14) {
+  if (!Array.isArray(rows) || rows.length < period + 1) return null;
+
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let index = 1; index <= period; index += 1) {
+    const previous = Number(rows[index - 1]?.[1]);
+    const current = Number(rows[index]?.[1]);
+    if (!isValidMarketNumber(previous) || !isValidMarketNumber(current)) return null;
+    const delta = current - previous;
+    if (delta >= 0) gainSum += delta;
+    else lossSum += Math.abs(delta);
+  }
+
+  let averageGain = gainSum / period;
+  let averageLoss = lossSum / period;
+  for (let index = period + 1; index < rows.length; index += 1) {
+    const previous = Number(rows[index - 1]?.[1]);
+    const current = Number(rows[index]?.[1]);
+    if (!isValidMarketNumber(previous) || !isValidMarketNumber(current)) return null;
+    const delta = current - previous;
+    averageGain = ((averageGain * (period - 1)) + Math.max(delta, 0)) / period;
+    averageLoss = ((averageLoss * (period - 1)) + Math.max(-delta, 0)) / period;
+  }
+
+  if (averageLoss === 0) return 100;
+  if (averageGain === 0) return 0;
+  const relativeStrength = averageGain / averageLoss;
+  return 100 - (100 / (1 + relativeStrength));
+}
+
+function buildRsi14Indicator(dailySeries, latestSeries, sourceLabel = '纳指') {
+  const rows = buildRsiRowsWithLatest(dailySeries, latestSeries);
+  const value = calculateRsi14(rows, 14);
+  const previousValue = rows.length > 15 ? calculateRsi14(rows.slice(0, -1), 14) : null;
+  const latest = rows.at(-1);
+  if (!Number.isFinite(value) || !latest) {
+    return { ...RSI_SIGNAL_CONFIG, error: true, sourceLabel, series: [] };
+  }
+
+  return {
+    ...RSI_SIGNAL_CONFIG,
+    price: value,
+    previousClose: Number.isFinite(previousValue) ? previousValue : null,
+    change: Number.isFinite(previousValue) ? value - previousValue : null,
+    timestamp: Number(latest[0]) || Date.now(),
+    dateText: latest[2] || formatNewYorkDateText(latest[0]) || '--',
+    marketSession: '最新窗口',
+    sourceLabel,
+    series: [],
   };
 }
 
@@ -1263,6 +1507,74 @@ async function fetchYahooChartSeries(symbol, options) {
   return normalizeChartSeries(data?.chart?.result?.[0]);
 }
 
+async function fetchPreferredNasdaqQuote(asset) {
+  const nativeRuntime = isNativeDashboardRuntime();
+  if (!nativeRuntime) return fetchSinaNasdaqQuote(asset);
+  const loaders = [
+    () => fetchSinaNasdaqQuote(asset),
+    () => fetchYahooMarketAsset(asset),
+  ];
+
+  for (const load of loaders) {
+    try {
+      const quote = await load();
+      if (quote && isValidMarketNumber(quote.price)) return quote;
+    } catch {
+      // Try the next quote source.
+    }
+  }
+
+  return null;
+}
+
+async function fetchPreferredNasdaqDailySeries(asset, limit = 520) {
+  const nativeRuntime = isNativeDashboardRuntime();
+  if (!nativeRuntime) return { rows: await fetchSinaNasdaqDailyKline(limit), sourceLabel: '新浪' };
+  const loaders = asset.domesticSecid
+    ? [
+      { sourceLabel: '新浪', load: () => fetchSinaNasdaqDailyKline(limit) },
+      { sourceLabel: '东方财富', load: () => fetchEastmoneyDailyKline(asset, limit) },
+    ]
+    : [{ sourceLabel: '新浪', load: () => fetchSinaNasdaqDailyKline(limit) }];
+
+  for (const loader of loaders) {
+    try {
+      const rows = await loader.load();
+      if (Array.isArray(rows) && rows.length) {
+        writeNdxDailyKlineCache(rows);
+        return { rows, sourceLabel: loader.sourceLabel };
+      }
+    } catch {
+      // Try the next daily source.
+    }
+  }
+
+  return { rows: readNdxDailyKlineCache(limit), sourceLabel: '缓存' };
+}
+
+async function fetchPreferredNasdaqIntradaySeries(asset) {
+  const nativeRuntime = isNativeDashboardRuntime();
+  if (!nativeRuntime) return { rows: await fetchSinaNasdaqTrend(), sourceLabel: '新浪' };
+  const loaders = asset.domesticSecid
+    ? [
+      { sourceLabel: '新浪', load: () => fetchSinaNasdaqTrend() },
+      { sourceLabel: '东方财富', load: () => fetchEastmoneyTrend(asset) },
+    ]
+    : [{ sourceLabel: '新浪', load: () => fetchSinaNasdaqTrend() }];
+
+  for (const loader of loaders) {
+    try {
+      const rows = await loader.load();
+      const series = normalizeMarketSeries(rows);
+      if (series.length) return { rows: series, sourceLabel: loader.sourceLabel };
+    } catch {
+      // Try the next intraday source.
+    }
+  }
+
+  return { rows: [], sourceLabel: '' };
+}
+
 async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE, quote = null) {
   const rangeOption = resolveNdxTrendRange(rangeKey);
   let sourceLabel = '东方财富';
@@ -1270,24 +1582,33 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
   let dailySeries = [];
 
   try {
-    dailySeries = asset.key === 'nasdaq'
-      ? await fetchSinaNasdaqDailyKline(rangeOption.historyLimit || 520)
-      : await fetchEastmoneyDailyKline(asset, rangeOption.historyLimit || 520);
-    if (asset.key === 'nasdaq' && dailySeries.length) writeNdxDailyKlineCache(dailySeries);
+    if (asset.key === 'nasdaq') {
+      const dailyPayload = await fetchPreferredNasdaqDailySeries(asset, rangeOption.historyLimit || 520);
+      dailySeries = dailyPayload.rows;
+      sourceLabel = dailyPayload.sourceLabel || sourceLabel;
+    } else {
+      dailySeries = await fetchEastmoneyDailyKline(asset, rangeOption.historyLimit || 520);
+    }
   } catch {
     dailySeries = asset.key === 'nasdaq' ? readNdxDailyKlineCache(rangeOption.historyLimit || 520) : [];
   }
 
   if (rangeOption.key === 'day') {
     try {
-      series = asset.key === 'nasdaq' ? await fetchSinaNasdaqTrend() : await fetchEastmoneyTrend(asset);
-      sourceLabel = asset.key === 'nasdaq' ? '新浪' : '东方财富';
+      if (asset.key === 'nasdaq') {
+        const trendPayload = await fetchPreferredNasdaqIntradaySeries(asset);
+        series = trendPayload.rows;
+        sourceLabel = trendPayload.sourceLabel || sourceLabel;
+      } else {
+        series = await fetchEastmoneyTrend(asset);
+        sourceLabel = '东方财富';
+      }
     } catch {
       series = [];
     }
   } else if (dailySeries.length) {
     series = dailySeries.slice(-(rangeOption.visiblePoints || dailySeries.length));
-    sourceLabel = asset.key === 'nasdaq' ? '新浪' : '东方财富';
+    if (asset.key !== 'nasdaq') sourceLabel = '东方财富';
   }
 
   if (!series.length) {
@@ -1330,17 +1651,22 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
     }
   }
 
-  const shouldAppendLivePoint = !(asset.key === 'nasdaq' && rangeOption.key === 'day');
+  const shouldAppendLivePoint = asset.key !== 'nasdaq';
   const visibleSeries = shouldAppendLivePoint ? appendLivePoint(series, quote) : normalizeMarketSeries(series);
-  const indicatorDailySeries = appendLivePoint(dailySeries, quote);
+  const dcaDailySeries = asset.key === 'nasdaq'
+    ? mergeCompletedIntradayClose(dailySeries, visibleSeries)
+    : dailySeries;
+  const indicatorDailySeries = asset.key === 'nasdaq' ? normalizeMarketSeries(dcaDailySeries) : appendLivePoint(dailySeries, quote);
   const indicators = buildMaDeviationSeries(visibleSeries, indicatorDailySeries);
-  const dcaPlan = asset.key === 'nasdaq' ? buildDcaPlanFromDailySeries(dailySeries, sourceLabel) : null;
+  const dcaPlan = asset.key === 'nasdaq' ? buildDcaPlanFromDailySeries(dcaDailySeries, sourceLabel) : null;
+  const rsi14 = asset.key === 'nasdaq' ? buildRsi14Indicator(dailySeries, visibleSeries, sourceLabel) : null;
   return {
     series: visibleSeries,
     ma200Series: indicators.ma200Series,
     deviationSeries: indicators.deviationSeries,
     latestDeviation: indicators.latestDeviation,
     dcaPlan,
+    rsi14,
     rangeChange: calcSeriesChange(visibleSeries),
     trendRangeKey: rangeOption.key,
     trendRangeLabel: rangeOption.rangeLabel,
@@ -1381,7 +1707,7 @@ async function fetchCboeVolatilityAsset(asset) {
 
 async function fetchNightMarketSnapshot({ includeTrend = false, includeVolatility = false, trendRangeKey = DEFAULT_NDX_TREND_RANGE } = {}) {
   const assets = [...NIGHT_MARKET_SIGNALS, ...MAGNIFICENT_SEVEN]
-    .filter((asset) => includeVolatility || asset.key !== 'vxn');
+    .filter((asset) => asset.key !== 'vxn');
   const entries = await Promise.all(assets.map(async (asset) => {
     if (Capacitor.isNativePlatform() && asset.key === 'vxn') {
       try {
@@ -1394,9 +1720,26 @@ async function fetchNightMarketSnapshot({ includeTrend = false, includeVolatilit
 
     try {
       if (asset.key === 'nasdaq') {
-        const quote = await fetchSinaNasdaqQuote(asset);
+        const quote = await fetchPreferredNasdaqQuote(asset);
         const trendPayload = includeTrend ? await fetchNasdaqTrendSeries(asset, trendRangeKey, quote) : {};
-        if (quote) return [asset.key, { ...quote, ...trendPayload }];
+        const trendLast = Array.isArray(trendPayload.series) ? trendPayload.series.at(-1) : null;
+        const hydratedQuote = quote || (
+          isValidMarketNumber(trendLast?.[1])
+            ? {
+              ...asset,
+              price: Number(trendLast[1]),
+              previousClose: null,
+              change: null,
+              timestamp: Number(trendLast[0]) || Date.now(),
+              marketSession: getUsMarketSession(),
+              sourceLabel: trendPayload.trendSourceLabel || '接口',
+            }
+            : null
+        );
+        if (hydratedQuote || Array.isArray(trendPayload.series)) {
+          return [asset.key, { ...asset, ...hydratedQuote, ...trendPayload }];
+        }
+        return [asset.key, { ...asset, error: true, series: [] }];
       }
 
       if (asset.domesticSecid) {
@@ -1432,6 +1775,11 @@ function mergeNightMarketSnapshot(current, snapshot) {
     const previous = current[key] || {};
     if (key !== 'nasdaq') {
       merged[key] = { ...previous, ...incoming };
+      return;
+    }
+
+    if (isNativeDashboardRuntime() && incoming?.sourceLabel === '东方财富') {
+      merged[key] = previous.price ? previous : { ...previous, ...incoming, error: true };
       return;
     }
 
@@ -2477,21 +2825,33 @@ function MarketQuoteTile({ config, item, featured = false }) {
   );
 }
 
+function getRsiZoneLabel(value) {
+  if (!Number.isFinite(value)) return '读取中';
+  if (value > 70) return '超买';
+  if (value >= 50) return '偏强';
+  if (value >= 30) return '偏弱';
+  return '超卖';
+}
+
+function formatGaugeDelta(value) {
+  if (!Number.isFinite(value)) return '--';
+  const absValue = Math.abs(value);
+  return `${value > 0 ? '+' : value < 0 ? '-' : ''}${absValue.toFixed(2)}`;
+}
+
 function VolatilityGauge({ config, item }) {
   const change = Number(item?.change);
   const rawValue = Number(item?.price);
-  const maxValue = 60;
-  const barValue = Number.isFinite(rawValue) ? clamp(rawValue, 0, maxValue) : null;
-  const barPercent = Number.isFinite(barValue) ? (barValue / maxValue) * 100 : 0;
-  const riskLabel = !Number.isFinite(rawValue)
-    ? '读取中'
-    : rawValue < 20
-      ? '低波'
-      : rawValue < 33
-        ? '常态'
-        : rawValue < 45
-          ? '偏高'
-          : '高压';
+  const minValue = Number.isFinite(config?.min) ? Number(config.min) : 0;
+  const maxValue = Number.isFinite(config?.max) ? Number(config.max) : 60;
+  const valueRange = Math.max(1, maxValue - minValue);
+  const barValue = Number.isFinite(rawValue) ? clamp(rawValue, minValue, maxValue) : null;
+  const barPercent = Number.isFinite(barValue) ? ((barValue - minValue) / valueRange) * 100 : 0;
+  const scaleMarks = Array.isArray(config?.scaleMarks) && config.scaleMarks.length
+    ? config.scaleMarks
+    : [{ value: 30, label: '30' }, { value: 50, label: '50' }, { value: 70, label: '70' }];
+  const riskLabel = getRsiZoneLabel(rawValue);
+  const scalePosition = (value) => `${clamp(((Number(value) - minValue) / valueRange) * 100, 0, 100)}%`;
 
   return (
     <article className={`volatility-gauge-card volatility-bar-card ${changeClass(change)}`}>
@@ -2509,47 +2869,55 @@ function VolatilityGauge({ config, item }) {
           <span>{riskLabel}</span>
         </div>
         <div className="volatility-bar-track">
+          {scaleMarks.map((mark) => (
+            <i
+              className="volatility-bar-tick"
+              key={mark.label}
+              style={{ left: scalePosition(mark.value) }}
+            />
+          ))}
           <i className="volatility-bar-marker" style={{ left: `${barPercent}%` }} />
         </div>
         <div className="volatility-bar-scale">
-          <span>0</span>
-          <span>20</span>
-          <span>30</span>
-          <span>40</span>
-          <span>60</span>
+          {scaleMarks.map((mark) => (
+            <span key={mark.label} style={{ left: scalePosition(mark.value) }}>{mark.label}</span>
+          ))}
         </div>
       </div>
 
       <div className="volatility-gauge-footer">
-        <span>相对前收盘</span>
-        <span className={changeClass(change)}>{Number.isFinite(change) ? formatPercent(change) : '--'}</span>
+        <span>较上一点</span>
+        <span className={changeClass(change)}>{formatGaugeDelta(change)}</span>
       </div>
     </article>
   );
 }
 
 function DcaCalculatorCard({ plan }) {
-  const isClosed = plan?.status === 'closed';
   const isUnavailable = !plan || plan.status === 'unavailable';
+  const fallbackOperationState = getChinaDcaOperationState(plan?.timestamp, plan?.dateText || plan?.date);
+  const operationState = typeof plan?.operationState === 'object' && plan.operationState
+    ? plan.operationState
+    : fallbackOperationState;
+  const isInvestWindow = operationState.isInvestWindow !== false;
   const score = Number(plan?.scores?.total);
   const invest = Number(plan?.dailyInvestRounded);
   const dynamic = Number(plan?.dynamicInvest);
   const factor = Number(plan?.dynamicFactor);
   const delta = Number(plan?.deltaInvest);
-  const priceTick = usePriceTick(!isClosed && Number.isFinite(invest) ? invest : null);
+  const isInvestDimmed = !isUnavailable && !isInvestWindow;
+  const priceTick = usePriceTick(!isUnavailable && !isInvestDimmed && Number.isFinite(invest) ? invest : null);
   const rowTemplates = [
     { key: 'ma200', label: 'MA200偏离', windowLabel: '200个交易日' },
     { key: 'drawdown', label: '52周回撤', windowLabel: '252个交易日高点' },
     { key: 'volatility', label: '30日波动', windowLabel: '30个交易日收益率' },
   ];
   const rows = Array.isArray(plan?.signals) && plan.signals.length ? plan.signals : rowTemplates;
-  const statusText = isClosed ? '休市' : isUnavailable ? '读取中' : null;
+  const statusText = isUnavailable ? '读取中' : null;
   const investText = statusText || (Number.isFinite(invest) ? invest.toFixed(0) : '--');
-  const deltaText = isClosed
-    ? '非交易日 · 休市'
-    : Number.isFinite(delta)
-      ? `较上次定投 ${delta >= 0 ? '+' : ''}${delta.toFixed(0)}¥`
-      : '较上次定投 --';
+  const deltaText = isUnavailable
+    ? '读取中'
+    : `较上次${Number.isFinite(delta) ? ` ${delta >= 0 ? '+' : ''}${delta.toFixed(0)}¥` : ' --'}`;
   const scoreText = Number.isFinite(score) ? score.toFixed(2) : '--';
   const factorText = Number.isFinite(factor) ? factor.toFixed(2) : '--';
   const dynamicText = Number.isFinite(dynamic) ? dynamic.toFixed(0) : '--';
@@ -2558,11 +2926,10 @@ function DcaCalculatorCard({ plan }) {
     : '--';
 
   return (
-    <article className={`dca-calculator-card ${isClosed ? 'closed' : changeClass(score)}`}>
+    <article className={`dca-calculator-card ${isUnavailable ? 'loading' : changeClass(score)} ${isInvestDimmed ? 'outside-invest-window' : ''}`}>
       <div className="dca-card-head">
         <div>
           <span>最优增强 DCA · 今日计算</span>
-          <strong>建议定投</strong>
         </div>
         <code>A40</code>
       </div>
@@ -2574,10 +2941,10 @@ function DcaCalculatorCard({ plan }) {
       </div>
 
       <div className="dca-score-strip">
-        <span>固定 {isClosed ? '休市' : DCA_STRATEGY_PARAMS.base}</span>
-        <span>总分 {isClosed ? '休市' : scoreText}</span>
-        <span>系数 {isClosed ? '休市' : factorText}</span>
-        <span>动态 {isClosed ? '休市' : dynamicText}</span>
+        <span>固定 {isUnavailable ? '--' : DCA_STRATEGY_PARAMS.base}</span>
+        <span>总分 {isUnavailable ? '--' : scoreText}</span>
+        <span>系数 {isUnavailable ? '--' : factorText}</span>
+        <span>动态 {isUnavailable ? '--' : dynamicText}</span>
       </div>
 
       <div className="dca-signal-grid">
@@ -2589,12 +2956,12 @@ function DcaCalculatorCard({ plan }) {
             <div className="dca-signal-row detailed" key={row.key || row.label}>
               <span className="dca-signal-name">
                 <b>{row.label}</b>
-                <small>{row.windowLabel}{Number.isFinite(weight) && !isClosed ? ` · w${weight.toFixed(1)}` : ''}</small>
+                <small>{row.windowLabel}{Number.isFinite(weight) && !isUnavailable ? ` · w${weight.toFixed(1)}` : ''}</small>
               </span>
-              <strong>{isClosed ? '休市' : row.displayValue || '--'}</strong>
+              <strong>{isUnavailable ? '--' : row.displayValue || '--'}</strong>
               <span className="dca-signal-calc">
-                <em className={changeClass(rowScore)}>分 {isClosed ? '--' : Number.isFinite(rowScore) ? rowScore.toFixed(2) : '--'}</em>
-                <em className={changeClass(contribution)}>贡 {isClosed ? '--' : Number.isFinite(contribution) ? `${contribution >= 0 ? '+' : ''}${contribution.toFixed(2)}` : '--'}</em>
+                <em className={changeClass(rowScore)}>分 {isUnavailable ? '--' : Number.isFinite(rowScore) ? rowScore.toFixed(2) : '--'}</em>
+                <em className={changeClass(contribution)}>贡 {isUnavailable ? '--' : Number.isFinite(contribution) ? `${contribution >= 0 ? '+' : ''}${contribution.toFixed(2)}` : '--'}</em>
               </span>
             </div>
           );
@@ -2602,8 +2969,8 @@ function DcaCalculatorCard({ plan }) {
       </div>
 
       <div className="dca-card-footer stacked">
-        <span>{isClosed ? '非交易日不计算建议定投' : `计算：40 + 60 × ${factorText} = ${investText}`}</span>
-        <span>{plan?.sourceLabel || '接口'} · 数据日 {isClosed ? '休市' : plan?.dateText || plan?.date || '--'} · 基准 {plan?.previousDateText || '--'} · 样本 {isClosed ? '--' : sampleText}</span>
+        <span>{isUnavailable ? '计算：40 + 60 × -- = 读取中' : `计算：40 + 60 × ${factorText} = ${investText}`}</span>
+        <span>美东基准 {plan?.dateText || plan?.date || '--'} · 上次 {plan?.previousDateText || '--'} · 样本 {isUnavailable ? '--' : sampleText}</span>
       </div>
     </article>
   );
@@ -2664,7 +3031,7 @@ function NightMarketDashboard({ marketMap, loading, fetchedAt, onRefresh, rangeK
     return {
       animation: false,
       color: [lineColor, ma200Color, deviationColor],
-      grid: { left: showLongTermIndicators ? (nativeUi ? 24 : 42) : (nativeUi ? 2 : 12), right: nativeUi ? 4 : 18, top: 24, bottom: nativeUi ? 14 : 8, containLabel: true },
+      grid: { left: nativeUi ? 2 : 12, right: nativeUi ? 4 : 18, top: 24, bottom: nativeUi ? 14 : 8, containLabel: true },
       tooltip: {
         trigger: 'axis',
         backgroundColor: 'rgba(12, 18, 32, 0.94)',
@@ -2723,7 +3090,7 @@ function NightMarketDashboard({ marketMap, loading, fetchedAt, onRefresh, rangeK
           axisLine: { show: false },
           axisTick: { show: false },
           axisLabel: {
-            show: showLongTermIndicators,
+            show: false,
             color: 'rgba(214, 220, 232, 0.42)',
             fontSize: nativeUi ? 8 : 10,
             formatter: (value) => `${Number(value).toFixed(0)}%`,
@@ -2846,11 +3213,11 @@ function NightMarketDashboard({ marketMap, loading, fetchedAt, onRefresh, rangeK
         <aside className="volatility-column">
           <div className="volatility-heading">
             <p className="eyebrow">纳指定投</p>
-            <small>VXN + 今日增强 DCA 计算</small>
+            <small>RSI(14) + 今日增强 DCA 计算</small>
           </div>
           <VolatilityGauge
-            config={NIGHT_MARKET_SIGNALS.find((item) => item.key === 'vxn')}
-            item={marketMap.vxn}
+            config={RSI_SIGNAL_CONFIG}
+            item={nasdaq.rsi14}
           />
           <DcaCalculatorCard plan={nasdaq.dcaPlan} />
         </aside>
@@ -3289,7 +3656,7 @@ export default function App() {
     return {
       animationDuration: 600,
       color: [selectedChangeColor],
-      grid: { left: nativeUi ? 4 : 12, right: nativeUi ? 4 : 18, top: 24, bottom: nativeUi ? 18 : 24, containLabel: true },
+      grid: { left: nativeUi ? 4 : 12, right: nativeUi ? 4 : 18, top: nativeUi ? 28 : 42, bottom: nativeUi ? 18 : 24, containLabel: true },
       tooltip: {
         trigger: 'axis',
         backgroundColor: 'rgba(12, 18, 32, 0.94)',
@@ -3458,15 +3825,15 @@ export default function App() {
             </div>
           </div>
 
-          <div className="toolbar">
-            <div className="segmented">
+          <div className="toolbar chart-toolbar">
+            <div className="segmented chart-segmented">
               {RANGE_OPTIONS.map((item) => (
                 <button key={item.label} type="button" className={range.label === item.label ? 'selected' : ''} onClick={() => setRange(item)}>
                   {item.label}
                 </button>
               ))}
             </div>
-            <div className="segmented">
+            <div className="segmented chart-segmented chart-mode-switch">
               <button type="button" className={displayMode === 'nav' ? 'selected' : ''} onClick={() => setDisplayMode('nav')}>净值</button>
               <button type="button" className={displayMode === 'return' ? 'selected' : ''} onClick={() => setDisplayMode('return')}>收益</button>
             </div>
@@ -3479,13 +3846,14 @@ export default function App() {
             <strong>{selectedHistory.length} 个数据点</strong>
           </div>
 
-          <EChart option={mainChartOption} className="main-chart" />
-
-          <div className="metrics-strip">
-            <MetricMini label="区间收益" value={formatPercent(selectedMetrics.rangeReturn)} tone={selectedMetrics.rangeReturn >= 0 ? 'up' : 'down'} />
-            <MetricMini label="最大回撤" value={formatPercent(selectedMetrics.maxDrawdown)} tone="down" />
-            <MetricMini label="年化波动" value={formatPercent(selectedMetrics.volatility)} />
-            <MetricMini label="净值日期" value={selectedNavDate} />
+          <div className="chart-stage">
+            <div className="metrics-strip chart-metrics-inline">
+              <MetricMini label="区间收益" value={formatPercent(selectedMetrics.rangeReturn)} />
+              <MetricMini label="最大回撤" value={formatPercent(selectedMetrics.maxDrawdown)} />
+              <MetricMini label="年化波动" value={formatPercent(selectedMetrics.volatility)} />
+              <MetricMini label="净值日期" value={selectedNavDate} />
+            </div>
+            <EChart option={mainChartOption} className="main-chart" />
           </div>
         </section>
       </section>

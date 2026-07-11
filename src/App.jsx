@@ -398,18 +398,22 @@ function normalizeYahooQuote(result) {
   let latestIndex = closeSeries.length - 1;
   while (latestIndex >= 0 && !isValidMarketNumber(closeSeries[latestIndex])) latestIndex -= 1;
   const latestPrice = latestIndex >= 0 ? Number(closeSeries[latestIndex]) : null;
-  const price = isValidMarketNumber(latestPrice)
-    ? latestPrice
-    : Number(meta.regularMarketPrice);
+  const metaPrice = Number(meta.regularMarketPrice);
+  const price = isValidMarketNumber(metaPrice)
+    ? metaPrice
+    : latestPrice;
   const previous = isValidMarketNumber(meta.previousClose)
     ? Number(meta.previousClose)
     : Number(meta.chartPreviousClose);
 
   if (!isValidMarketNumber(price)) return null;
 
-  const latestTimestamp = latestIndex >= 0 && timestamps[latestIndex]
-    ? Number(timestamps[latestIndex]) * 1000
-    : Number(meta.regularMarketTime || 0) * 1000;
+  const metaTimestamp = Number(meta.regularMarketTime || 0) * 1000;
+  const latestTimestamp = Number.isFinite(metaTimestamp) && metaTimestamp > 0
+    ? metaTimestamp
+    : latestIndex >= 0 && timestamps[latestIndex]
+      ? Number(timestamps[latestIndex]) * 1000
+      : Date.now();
   const latestSeconds = latestTimestamp / 1000;
   const periods = meta.currentTradingPeriod || {};
   const inPeriod = (period) => Number(period?.start) <= latestSeconds && latestSeconds <= Number(period?.end);
@@ -425,6 +429,8 @@ function normalizeYahooQuote(result) {
     price,
     change: isValidMarketNumber(previous) ? ((price - previous) / previous) * 100 : null,
     previousClose: isValidMarketNumber(previous) ? previous : null,
+    dayHigh: isValidMarketNumber(meta.regularMarketDayHigh) ? Number(meta.regularMarketDayHigh) : null,
+    dayLow: isValidMarketNumber(meta.regularMarketDayLow) ? Number(meta.regularMarketDayLow) : null,
     timestamp: latestTimestamp,
     currency: meta.currency || '',
     exchangeName: meta.exchangeName || '',
@@ -437,12 +443,17 @@ function requestYahooJsonp(symbol, options = {}) {
   const range = options.range || '1d';
   const interval = options.interval || '1m';
   const timeoutMs = options.timeoutMs || 8000;
+  const includePrePost = options.includePrePost === false ? 'false' : 'true';
 
   if (Capacitor.isNativePlatform()) {
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=true`;
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=${includePrePost}`;
     return CapacitorHttp.get({
       url: yahooUrl,
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json,text/plain,*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+      },
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
     }).then((response) => (
@@ -468,7 +479,7 @@ function requestYahooJsonp(symbol, options = {}) {
       resolve(payload);
     };
 
-    script.src = `/api/yahoo-jsonp?cb=${callbackName}&symbol=${encodeURIComponent(symbol)}&range=${range}&interval=${interval}&ts=${Date.now()}`;
+    script.src = `/api/yahoo-jsonp?cb=${callbackName}&symbol=${encodeURIComponent(symbol)}&range=${range}&interval=${interval}&includePrePost=${includePrePost}&ts=${Date.now()}`;
     script.onerror = () => {
       cleanup();
       reject(new Error('yahoo quote request failed'));
@@ -655,13 +666,43 @@ async function requestSinaUs(kind, params = {}) {
   throw new Error(`sina ${kind} failed`);
 }
 
+function getTimeZoneOffsetMinutes(timestamp, timeZone) {
+  const number = Number(timestamp);
+  if (!Number.isFinite(number)) return 0;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(number));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const asUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second),
+  );
+  return Math.round((asUtc - number) / 60000);
+}
+
 function parseEasternTimestamp(value, closeTime = '16:00:00') {
   const text = String(value || '').trim();
   if (!text) return NaN;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    return new Date(`${text}T${closeTime}-04:00`).getTime();
-  }
-  return new Date(`${text.replace(' ', 'T')}-04:00`).getTime();
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+    ? `${text}T${closeTime}`
+    : text.replace(' ', 'T');
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return NaN;
+  const [, year, month, day, hour, minute, second = '0'] = match;
+  const localAsUtc = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  const offsetMinutes = getTimeZoneOffsetMinutes(localAsUtc, 'America/New_York');
+  return localAsUtc - (offsetMinutes * 60 * 1000);
 }
 
 async function fetchSinaNasdaqQuote(asset) {
@@ -832,6 +873,39 @@ function normalizeMarketSeries(series) {
     .sort((a, b) => a[0] - b[0]);
 }
 
+function getNewYorkTimePartsFromTimestamp(timestamp) {
+  const number = Number(timestamp);
+  if (!Number.isFinite(number)) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(number));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const minutes = (Number(values.hour) * 60) + Number(values.minute);
+  return {
+    ...values,
+    dateText: values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : '',
+    minutes,
+  };
+}
+
+function isRegularUsMarketTimestamp(timestamp) {
+  const values = getNewYorkTimePartsFromTimestamp(timestamp);
+  if (!values?.dateText || ['Sat', 'Sun'].includes(values.weekday)) return false;
+  return values.minutes >= (9 * 60 + 30) && values.minutes <= (16 * 60);
+}
+
+function filterRegularUsMarketSeries(series) {
+  return normalizeMarketSeries(series).filter(([timestamp]) => isRegularUsMarketTimestamp(timestamp));
+}
+
 function appendLivePoint(series, quote) {
   const output = normalizeMarketSeries(series);
   if (!isValidMarketNumber(quote?.price)) return output;
@@ -844,6 +918,136 @@ function appendLivePoint(series, quote) {
   }
   output.push([timestamp, Number(quote.price)]);
   return output.sort((a, b) => a[0] - b[0]);
+}
+
+function alignLatestSeriesPointToQuote(series, quote) {
+  const output = normalizeMarketSeries(series);
+  if (!output.length || !isValidMarketNumber(quote?.price)) return output;
+
+  const price = Number(quote.price);
+  const quoteTimestamp = Number(quote.timestamp);
+  const last = output.at(-1);
+  const lastTimestamp = Number(last?.[0]);
+  if (!Number.isFinite(lastTimestamp) || !Number.isFinite(quoteTimestamp)) return output;
+
+  const quoteDateText = formatNewYorkDateText(quoteTimestamp);
+  const lastDateText = formatNewYorkDateText(lastTimestamp);
+  if (!quoteDateText || quoteDateText !== lastDateText) return output;
+
+  // Keep the chart's real market-session timestamp. The authoritative quote only
+  // corrects the last bar's value; it must not append a synthetic after-close bar.
+  output[output.length - 1] = [lastTimestamp, price];
+  return output;
+}
+
+function alignDcaDailySeriesLatestToQuote(dailySeries, quote) {
+  const rows = normalizeDcaDailyRows(dailySeries);
+  if (!rows.length || !isValidMarketNumber(quote?.price)) return rows;
+
+  const price = Number(quote.price);
+  const quoteTimestamp = Number(quote.timestamp);
+  const last = rows.at(-1);
+  const fallbackTimestamp = Number(last?.[0]);
+  const timestamp = Number.isFinite(quoteTimestamp) && quoteTimestamp > 0
+    ? quoteTimestamp
+    : fallbackTimestamp;
+  if (!Number.isFinite(timestamp)) return rows;
+
+  const dateText = formatNewYorkDateText(timestamp) || last?.[2];
+  if (!dateText || !isCompletedUsDailyBar(dateText)) return rows;
+  if (last?.[2] && dateText < last[2]) return rows;
+
+  const byDate = new Map(rows.map((row) => [row[2], row]));
+  const existing = byDate.get(dateText);
+  const existingTimestamp = Number(existing?.[0]);
+  const nextTimestamp = Number.isFinite(existingTimestamp) ? Math.max(existingTimestamp, timestamp) : timestamp;
+  byDate.set(dateText, [nextTimestamp, price, dateText]);
+
+  return [...byDate.values()].sort((a, b) => a[0] - b[0]);
+}
+
+function deriveNasdaqQuoteFromDailySeries(asset, dailySeries, sourceLabel = '日线') {
+  const rows = normalizeDcaDailyRows(dailySeries);
+  const latest = rows.at(-1);
+  const previous = rows.at(-2);
+  const price = Number(latest?.[1]);
+  const previousClose = Number(previous?.[1]);
+  if (!isValidMarketNumber(price)) return null;
+  return {
+    ...asset,
+    price,
+    previousClose: isValidMarketNumber(previousClose) ? previousClose : null,
+    change: isValidMarketNumber(previousClose) ? ((price - previousClose) / previousClose) * 100 : null,
+    timestamp: Number(latest?.[0]) || Date.now(),
+    marketSession: '最近收盘',
+    quoteSource: 'daily-close',
+    sourceLabel,
+  };
+}
+
+function deriveNasdaqQuoteFromIntradaySeries(asset, intradaySeries, referenceQuote = null, dailyCloseQuote = null, sourceLabel = '日内') {
+  const rows = normalizeMarketSeries(intradaySeries);
+  const latest = rows.at(-1);
+  const price = Number(latest?.[1]);
+  const timestamp = Number(latest?.[0]);
+  if (!isValidMarketNumber(price) || !Number.isFinite(timestamp)) return null;
+
+  const latestDateText = formatNewYorkDateText(timestamp);
+  const referenceTimestamp = Number(referenceQuote?.timestamp);
+  const referenceDateText = Number.isFinite(referenceTimestamp) ? formatNewYorkDateText(referenceTimestamp) : '';
+  const dailyTimestamp = Number(dailyCloseQuote?.timestamp);
+  const dailyDateText = Number.isFinite(dailyTimestamp) ? formatNewYorkDateText(dailyTimestamp) : '';
+
+  let previousClose = null;
+  if (
+    isValidMarketNumber(referenceQuote?.price)
+    && latestDateText
+    && referenceDateText
+    && referenceDateText < latestDateText
+  ) {
+    previousClose = Number(referenceQuote.price);
+  } else if (isValidMarketNumber(referenceQuote?.previousClose)) {
+    previousClose = Number(referenceQuote.previousClose);
+  } else if (
+    isValidMarketNumber(dailyCloseQuote?.price)
+    && latestDateText
+    && dailyDateText
+    && dailyDateText < latestDateText
+  ) {
+    previousClose = Number(dailyCloseQuote.price);
+  } else if (isValidMarketNumber(dailyCloseQuote?.previousClose)) {
+    previousClose = Number(dailyCloseQuote.previousClose);
+  } else if (isValidMarketNumber(referenceQuote?.price)) {
+    previousClose = Number(referenceQuote.price);
+  }
+
+  return {
+    ...asset,
+    price,
+    previousClose: isValidMarketNumber(previousClose) ? previousClose : null,
+    change: isValidMarketNumber(previousClose) ? ((price - previousClose) / previousClose) * 100 : null,
+    timestamp,
+    marketSession: isRegularUsMarketTimestamp(timestamp) ? '盘中' : '最近交易',
+    quoteSource: 'intraday',
+    sourceLabel,
+  };
+}
+
+function shouldPreferIntradayQuote(intradayQuote, quote) {
+  if (!intradayQuote || !isValidMarketNumber(intradayQuote.price)) return false;
+  if (!quote || !isValidMarketNumber(quote.price)) return true;
+
+  const intradayTimestamp = Number(intradayQuote.timestamp);
+  const quoteTimestamp = Number(quote.timestamp);
+  const intradayDateText = Number.isFinite(intradayTimestamp) ? formatNewYorkDateText(intradayTimestamp) : '';
+  const quoteDateText = Number.isFinite(quoteTimestamp) ? formatNewYorkDateText(quoteTimestamp) : '';
+
+  if (intradayDateText && quoteDateText && intradayDateText > quoteDateText) return true;
+  if (intradayDateText && quoteDateText && intradayDateText < quoteDateText) return false;
+  if (Number.isFinite(intradayTimestamp) && Number.isFinite(quoteTimestamp)) {
+    return intradayTimestamp > quoteTimestamp + 60 * 1000;
+  }
+  return Number.isFinite(intradayTimestamp) && isRegularUsMarketTimestamp(intradayTimestamp);
 }
 
 function parseEastmoneyTrendRows(rows) {
@@ -896,7 +1100,7 @@ function isCompletedUsDailyBar(dateText, now = new Date()) {
   return minutes >= 16 * 60 + 5;
 }
 
-const NDX_DAILY_KLINE_CACHE_KEY = 'finance-dashboard-ndx-sina-daily-kline-v2';
+const NDX_DAILY_KLINE_CACHE_KEY = 'finance-dashboard-ndx-yahoo-daily-kline-v4';
 
 function readNdxDailyKlineCache(limit = 520) {
   try {
@@ -951,7 +1155,9 @@ async function fetchEastmoneyDailyKline(asset, limit = 520) {
 }
 
 async function fetchYahooMarketAsset(asset) {
-  const options = asset.key === 'nasdaq' ? { range: '2d', interval: '1m', timeoutMs: 10000 } : { timeoutMs: 10000 };
+  const options = asset.key === 'nasdaq'
+    ? { range: '1d', interval: '1m', includePrePost: false, timeoutMs: 12000 }
+    : { timeoutMs: 10000 };
   const data = await requestYahooJsonp(asset.symbol, options);
   const result = data?.chart?.result?.[0];
   const quote = normalizeYahooQuote(result);
@@ -1508,17 +1714,18 @@ async function fetchYahooChartSeries(symbol, options) {
 }
 
 async function fetchPreferredNasdaqQuote(asset) {
-  const nativeRuntime = isNativeDashboardRuntime();
-  if (!nativeRuntime) return fetchSinaNasdaqQuote(asset);
   const loaders = [
-    () => fetchSinaNasdaqQuote(asset),
     () => fetchYahooMarketAsset(asset),
+    () => fetchSinaNasdaqQuote(asset),
   ];
 
   for (const load of loaders) {
     try {
       const quote = await load();
-      if (quote && isValidMarketNumber(quote.price)) return quote;
+      if (quote && isValidMarketNumber(quote.price)) {
+        const { series: _series, ma200Series: _ma200Series, deviationSeries: _deviationSeries, ...quoteOnly } = quote;
+        return quoteOnly;
+      }
     } catch {
       // Try the next quote source.
     }
@@ -1528,14 +1735,32 @@ async function fetchPreferredNasdaqQuote(asset) {
 }
 
 async function fetchPreferredNasdaqDailySeries(asset, limit = 520) {
-  const nativeRuntime = isNativeDashboardRuntime();
-  if (!nativeRuntime) return { rows: await fetchSinaNasdaqDailyKline(limit), sourceLabel: '新浪' };
+  const loadYahooDaily = async () => {
+    const range = limit > 800 ? '5y' : limit > 260 ? '2y' : '1y';
+    const rows = normalizeMarketSeries(await fetchYahooChartSeries(asset.symbol, {
+      range,
+      interval: '1d',
+      includePrePost: false,
+      timeoutMs: 14000,
+    })).map(([timestamp, price]) => [timestamp, price, formatNewYorkDateText(timestamp)]);
+    return rows.filter(([timestamp, price, dateText]) => (
+      Number.isFinite(timestamp)
+      && isValidMarketNumber(price)
+      && dateText
+      && isCompletedUsDailyBar(dateText)
+    )).slice(-limit);
+  };
+
   const loaders = asset.domesticSecid
     ? [
+      { sourceLabel: 'Yahoo', load: loadYahooDaily },
       { sourceLabel: '新浪', load: () => fetchSinaNasdaqDailyKline(limit) },
       { sourceLabel: '东方财富', load: () => fetchEastmoneyDailyKline(asset, limit) },
     ]
-    : [{ sourceLabel: '新浪', load: () => fetchSinaNasdaqDailyKline(limit) }];
+    : [
+      { sourceLabel: 'Yahoo', load: loadYahooDaily },
+      { sourceLabel: '新浪', load: () => fetchSinaNasdaqDailyKline(limit) },
+    ];
 
   for (const loader of loaders) {
     try {
@@ -1553,19 +1778,28 @@ async function fetchPreferredNasdaqDailySeries(asset, limit = 520) {
 }
 
 async function fetchPreferredNasdaqIntradaySeries(asset) {
-  const nativeRuntime = isNativeDashboardRuntime();
-  if (!nativeRuntime) return { rows: await fetchSinaNasdaqTrend(), sourceLabel: '新浪' };
+  const loadYahooIntraday = async () => filterRegularUsMarketSeries(await fetchYahooChartSeries(asset.symbol, {
+    range: '1d',
+    interval: '1m',
+    includePrePost: false,
+    timeoutMs: 14000,
+  }));
+
   const loaders = asset.domesticSecid
     ? [
+      { sourceLabel: 'Yahoo', load: loadYahooIntraday },
       { sourceLabel: '新浪', load: () => fetchSinaNasdaqTrend() },
       { sourceLabel: '东方财富', load: () => fetchEastmoneyTrend(asset) },
     ]
-    : [{ sourceLabel: '新浪', load: () => fetchSinaNasdaqTrend() }];
+    : [
+      { sourceLabel: 'Yahoo', load: loadYahooIntraday },
+      { sourceLabel: '新浪', load: () => fetchSinaNasdaqTrend() },
+    ];
 
   for (const loader of loaders) {
     try {
       const rows = await loader.load();
-      const series = normalizeMarketSeries(rows);
+      const series = filterRegularUsMarketSeries(rows);
       if (series.length) return { rows: series, sourceLabel: loader.sourceLabel };
     } catch {
       // Try the next intraday source.
@@ -1577,9 +1811,10 @@ async function fetchPreferredNasdaqIntradaySeries(asset) {
 
 async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE, quote = null) {
   const rangeOption = resolveNdxTrendRange(rangeKey);
-  let sourceLabel = '东方财富';
+  let sourceLabel = 'Yahoo';
   let series = [];
   let dailySeries = [];
+  let intradayPayload = { rows: [], sourceLabel: '' };
 
   try {
     if (asset.key === 'nasdaq') {
@@ -1588,27 +1823,42 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
       sourceLabel = dailyPayload.sourceLabel || sourceLabel;
     } else {
       dailySeries = await fetchEastmoneyDailyKline(asset, rangeOption.historyLimit || 520);
+      sourceLabel = '东方财富';
     }
   } catch {
     dailySeries = asset.key === 'nasdaq' ? readNdxDailyKlineCache(rangeOption.historyLimit || 520) : [];
   }
 
+  const quoteAlignedDailySeries = asset.key === 'nasdaq'
+    ? alignDcaDailySeriesLatestToQuote(dailySeries, quote)
+    : normalizeDcaDailyRows(dailySeries);
+  const dailyCloseQuote = asset.key === 'nasdaq'
+    ? deriveNasdaqQuoteFromDailySeries(asset, quoteAlignedDailySeries, sourceLabel)
+    : null;
+  const baseQuote = isValidMarketNumber(quote?.price) ? quote : dailyCloseQuote;
+
+  if (asset.key === 'nasdaq') {
+    try {
+      intradayPayload = await fetchPreferredNasdaqIntradaySeries(asset);
+    } catch {
+      intradayPayload = { rows: [], sourceLabel: '' };
+    }
+  }
+
   if (rangeOption.key === 'day') {
     try {
       if (asset.key === 'nasdaq') {
-        const trendPayload = await fetchPreferredNasdaqIntradaySeries(asset);
-        series = trendPayload.rows;
-        sourceLabel = trendPayload.sourceLabel || sourceLabel;
+        series = intradayPayload.rows;
+        sourceLabel = intradayPayload.sourceLabel || sourceLabel;
       } else {
-        series = await fetchEastmoneyTrend(asset);
+        series = filterRegularUsMarketSeries(await fetchEastmoneyTrend(asset));
         sourceLabel = '东方财富';
       }
     } catch {
       series = [];
     }
-  } else if (dailySeries.length) {
-    series = dailySeries.slice(-(rangeOption.visiblePoints || dailySeries.length));
-    if (asset.key !== 'nasdaq') sourceLabel = '东方财富';
+  } else if (quoteAlignedDailySeries.length) {
+    series = quoteAlignedDailySeries.slice(-(rangeOption.visiblePoints || quoteAlignedDailySeries.length));
   }
 
   if (!series.length) {
@@ -1622,44 +1872,64 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
             ? '5y'
             : '1d';
     const yahooInterval = rangeOption.key === 'day' ? '1m' : rangeOption.key === 'week' ? '15m' : '1d';
-    series = normalizeMarketSeries(await fetchYahooChartSeries(asset.symbol, {
+    const fallbackSeries = normalizeMarketSeries(await fetchYahooChartSeries(asset.symbol, {
       range: yahooRange,
       interval: yahooInterval,
+      includePrePost: rangeOption.key !== 'day',
       timeoutMs: 14000,
     }));
+    series = rangeOption.key === 'day' ? filterRegularUsMarketSeries(fallbackSeries) : fallbackSeries;
     sourceLabel = 'Yahoo';
   }
 
-  if (!dailySeries.length) {
+  if (!quoteAlignedDailySeries.length) {
     try {
-      dailySeries = normalizeMarketSeries(await fetchYahooChartSeries(asset.symbol, {
+      const fallbackDaily = normalizeMarketSeries(await fetchYahooChartSeries(asset.symbol, {
         range: rangeOption.key === 'fiveYear' ? '5y' : '2y',
         interval: '1d',
+        includePrePost: false,
         timeoutMs: 14000,
-      }));
+      })).map(([timestamp, price]) => [timestamp, price, formatNewYorkDateText(timestamp)]);
+      dailySeries = fallbackDaily.filter(([timestamp, price, dateText]) => (
+        Number.isFinite(timestamp)
+        && isValidMarketNumber(price)
+        && dateText
+        && isCompletedUsDailyBar(dateText)
+      ));
     } catch {
       dailySeries = [];
     }
   }
 
-  if (sourceLabel === 'Yahoo' && isValidMarketNumber(quote?.price) && isValidMarketNumber(series.at(-1)?.[1])) {
-    const lastSeriesPrice = Number(series.at(-1)[1]);
-    const quotePrice = Number(quote.price);
-    if (Math.abs(lastSeriesPrice - quotePrice) / quotePrice > 0.06) {
-      series = [];
-      dailySeries = [];
-    }
-  }
+  const liveSeriesForQuote = intradayPayload.rows.length ? intradayPayload.rows : (rangeOption.key === 'day' ? series : []);
+  const intradayQuote = asset.key === 'nasdaq'
+    ? deriveNasdaqQuoteFromIntradaySeries(
+      asset,
+      liveSeriesForQuote,
+      baseQuote,
+      dailyCloseQuote,
+      intradayPayload.sourceLabel || sourceLabel,
+    )
+    : null;
+  const useIntradayQuote = shouldPreferIntradayQuote(intradayQuote, baseQuote);
+  const effectiveQuote = useIntradayQuote ? intradayQuote : baseQuote;
 
-  const shouldAppendLivePoint = asset.key !== 'nasdaq';
-  const visibleSeries = shouldAppendLivePoint ? appendLivePoint(series, quote) : normalizeMarketSeries(series);
+  const dcaDailyBaseSeries = quoteAlignedDailySeries.length ? quoteAlignedDailySeries : dailySeries;
   const dcaDailySeries = asset.key === 'nasdaq'
-    ? mergeCompletedIntradayClose(dailySeries, visibleSeries)
-    : dailySeries;
-  const indicatorDailySeries = asset.key === 'nasdaq' ? normalizeMarketSeries(dcaDailySeries) : appendLivePoint(dailySeries, quote);
+    ? alignDcaDailySeriesLatestToQuote(dcaDailyBaseSeries, effectiveQuote)
+    : normalizeDcaDailyRows(dailySeries);
+
+  const rawVisibleSeries = asset.key === 'nasdaq'
+    ? normalizeMarketSeries(series)
+    : appendLivePoint(series, effectiveQuote);
+  const visibleSeries = asset.key === 'nasdaq' && rangeOption.key === 'day'
+    ? alignLatestSeriesPointToQuote(filterRegularUsMarketSeries(rawVisibleSeries), effectiveQuote)
+    : rawVisibleSeries;
+
+  const indicatorDailySeries = asset.key === 'nasdaq' ? dcaDailySeries : appendLivePoint(dailySeries, effectiveQuote);
   const indicators = buildMaDeviationSeries(visibleSeries, indicatorDailySeries);
   const dcaPlan = asset.key === 'nasdaq' ? buildDcaPlanFromDailySeries(dcaDailySeries, sourceLabel) : null;
-  const rsi14 = asset.key === 'nasdaq' ? buildRsi14Indicator(dailySeries, visibleSeries, sourceLabel) : null;
+  const rsi14 = asset.key === 'nasdaq' ? buildRsi14Indicator(dcaDailySeries, visibleSeries, sourceLabel) : null;
   return {
     series: visibleSeries,
     ma200Series: indicators.ma200Series,
@@ -1672,6 +1942,8 @@ async function fetchNasdaqTrendSeries(asset, rangeKey = DEFAULT_NDX_TREND_RANGE,
     trendRangeLabel: rangeOption.rangeLabel,
     trendIntervalLabel: rangeOption.intervalLabel,
     trendSourceLabel: sourceLabel,
+    quoteFallback: baseQuote && !isValidMarketNumber(quote?.price) ? baseQuote : null,
+    liveQuoteFallback: useIntradayQuote ? intradayQuote : null,
   };
 }
 
@@ -1722,22 +1994,10 @@ async function fetchNightMarketSnapshot({ includeTrend = false, includeVolatilit
       if (asset.key === 'nasdaq') {
         const quote = await fetchPreferredNasdaqQuote(asset);
         const trendPayload = includeTrend ? await fetchNasdaqTrendSeries(asset, trendRangeKey, quote) : {};
-        const trendLast = Array.isArray(trendPayload.series) ? trendPayload.series.at(-1) : null;
-        const hydratedQuote = quote || (
-          isValidMarketNumber(trendLast?.[1])
-            ? {
-              ...asset,
-              price: Number(trendLast[1]),
-              previousClose: null,
-              change: null,
-              timestamp: Number(trendLast[0]) || Date.now(),
-              marketSession: getUsMarketSession(),
-              sourceLabel: trendPayload.trendSourceLabel || '接口',
-            }
-            : null
-        );
-        if (hydratedQuote || Array.isArray(trendPayload.series)) {
-          return [asset.key, { ...asset, ...hydratedQuote, ...trendPayload }];
+        const { quoteFallback, liveQuoteFallback, ...trendData } = trendPayload;
+        const effectiveQuote = liveQuoteFallback || quote || quoteFallback;
+        if (effectiveQuote || Array.isArray(trendData.series)) {
+          return [asset.key, { ...asset, ...effectiveQuote, ...trendData }];
         }
         return [asset.key, { ...asset, error: true, series: [] }];
       }
@@ -2988,8 +3248,14 @@ function NightMarketDashboard({ marketMap, loading, fetchedAt, onRefresh, rangeK
   const ma200Series = showLongTermIndicators && dataRangeMatches && Array.isArray(nasdaq.ma200Series) ? nasdaq.ma200Series : [];
   const deviationSeries = showLongTermIndicators && dataRangeMatches && Array.isArray(nasdaq.deviationSeries) ? nasdaq.deviationSeries : [];
   const prices = series.map((item) => item[1]).filter(Number.isFinite);
-  const sessionHigh = prices.length ? Math.max(...prices) : null;
-  const sessionLow = prices.length ? Math.min(...prices) : null;
+  const quoteDayHigh = Number(nasdaq.dayHigh);
+  const quoteDayLow = Number(nasdaq.dayLow);
+  const sessionHigh = activeRange.key === DEFAULT_NDX_TREND_RANGE && isValidMarketNumber(quoteDayHigh)
+    ? quoteDayHigh
+    : prices.length ? Math.max(...prices) : null;
+  const sessionLow = activeRange.key === DEFAULT_NDX_TREND_RANGE && isValidMarketNumber(quoteDayLow)
+    ? quoteDayLow
+    : prices.length ? Math.min(...prices) : null;
   const latestTimestamp = Math.max(0, ...Object.values(marketMap).map((item) => Number(item?.timestamp) || 0));
   const chartDataTimestamp = Number(series.at(-1)?.[0]) || Number(nasdaq.timestamp) || latestTimestamp;
   const dataTimeLabel = latestTimestamp
@@ -3001,7 +3267,11 @@ function NightMarketDashboard({ marketMap, loading, fetchedAt, onRefresh, rangeK
   const fetchedLabel = fetchedAt
     ? new Date(fetchedAt).toLocaleTimeString('zh-CN', { hour12: false })
     : '--';
-  const displayedChange = dataRangeMatches && Number.isFinite(Number(nasdaq.rangeChange)) ? Number(nasdaq.rangeChange) : Number(nasdaq.change);
+  const displayedChange = activeRange.key === DEFAULT_NDX_TREND_RANGE
+    ? Number(nasdaq.change)
+    : dataRangeMatches && Number.isFinite(Number(nasdaq.rangeChange))
+      ? Number(nasdaq.rangeChange)
+      : Number(nasdaq.change);
   const latestDeviation = Number(nasdaq.latestDeviation);
   const deviationAxisLimit = useMemo(() => {
     if (!showLongTermIndicators || !deviationSeries.length) return 100;

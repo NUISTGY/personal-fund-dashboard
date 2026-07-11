@@ -253,6 +253,7 @@ function yahooQuoteJsonpPlugin() {
     const allowedIntervals = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1d', '5d', '1wk', '1mo'];
     const range = allowedRanges.includes(requestedRange) ? requestedRange : '1d';
     const interval = allowedIntervals.includes(requestedInterval) ? requestedInterval : '1m';
+    const includePrePost = requestUrl.searchParams.get('includePrePost') === 'false' ? 'false' : 'true';
     const safeCallback = /^[A-Za-z_$][\w$]*$/.test(callback) ? callback : '';
 
     response.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -264,7 +265,7 @@ function yahooQuoteJsonpPlugin() {
     }
 
     try {
-      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=true`;
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=${includePrePost}`;
       const yahooResponse = await fetch(yahooUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
       });
